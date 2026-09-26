@@ -1,0 +1,22 @@
+[workspace]
+members = ["crates/light-core", "crates/light-agent", "src-tauri"]
+default-members = ["crates/light-core", "crates/light-agent"]
+resolver = "2"
+
+[workspace.package]
+version = "0.3.2"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/chummumm/ai-light"
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+light-core = { path = "crates/light-core" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
