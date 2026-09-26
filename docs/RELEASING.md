@@ -4,7 +4,7 @@
 
 main提交和Pull Request运行测试及Windows/Ubuntu构建，Actions的Artifacts提供`windows-x64`、`ubuntu-agent`和测试日志，保留30天。两端使用prepare输出的同一源码SHA，依赖用已提交Cargo.lock固定。Action引用完整commit SHA，Rust固定1.98.1、Tauri CLI2.11.5。
 
-首次仓库初始化时如果main缺Cargo.lock，prepare可以取已通过测试的bootstrap锁文件并提交；之后始终`--locked`。这一步用GITHUB_TOKEN写入不会无限触发自己的push流程。正常开发不应删除锁文件。若分支保护拒绝首次提交，应由维护者把锁文件正常提交，而不是关闭保护。
+Cargo.lock已在初始化时提交。每次构建使用`--locked`，不会自动升级或修改依赖。需要有意更新依赖时由维护者审阅并提交锁文件。prepare和PR构建只需contents:read，不自动推送代码。
 
 ## 创建新预发布版
 
@@ -26,7 +26,7 @@ Windows使用原生Windows-2022/MSVC，不把跨编译模拟测试当作原生�
 
 ## CI权限与安全
 
-默认contents:read。prepare仅在受信任main首次锁文件提交时写入；PR不持久化checkout凭据，fork token仍受GitHub读权限限制。release只在受信任分支/标签且非PR运行并使用contents:write。不要改用pull_request_target来执行未知PR源码；不要在日志输出token/client.json。
+默认contents:read，checkout不持久化凭据。release仅在受信任分支/标签且非PR运行，单独授予contents:write。不要改用pull_request_target来执行未知PR源码；不要在日志输出token/client.json。Windows调用node.exe直接运行Tauri CLI，保留Cargo的`-- --locked`参数分隔，不经过会消费`--`的PowerShell脚本shim。
 
 ## 发布前实机检查
 
