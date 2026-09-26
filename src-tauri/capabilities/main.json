@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-window",
+  "description": "Local AI Light desktop window only; no shell or filesystem plugin permissions.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
