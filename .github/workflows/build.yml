@@ -1,0 +1,10 @@
+name: Build and release
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  setup:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo 'Source import in progress; build jobs are added after the complete source is uploaded.'
