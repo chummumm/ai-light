@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { batteryPresentation as b, remaining, stateInfo } from '../ui/view-model.js';
+test('unknown battery is not zero',()=>assert.equal(b({}).summary,'—'));
+test('zero battery is valid and low',()=>{const v=b({reading:{percent:0},stale:false});assert.equal(v.summary,'0%');assert.equal(v.low,true);});
+test('100 percent remains percentage only',()=>{const v=b({reading:{percent:100,charge:'charging'}});assert.equal(v.summary,'100%');assert.equal('charge' in v,false);});
+test('old charging fields never leak into presentation',()=>{const v=b({reading:{percent:70,charge_supported:true,charge:'charging',wired_power:true}});assert.equal('charge' in v,false);assert.equal('wired' in v,false);});
+test('historical percentage labeled',()=>assert.equal(b({reading:{percent:19},stale:true}).suffix,'上次读数'));
+test('stale data not fresh low battery event',()=>assert.equal(b({reading:{percent:19},stale:true}).low,false));
+test('low percentage boundary',()=>{assert.equal(b({reading:{percent:20}}).low,true);assert.equal(b({reading:{percent:21}}).low,false);});
+test('reserved percentage rejected',()=>assert.equal(b({reading:{percent:255}}).summary,'—'));
+test('fractional percentage rejected',()=>assert.equal(b({reading:{percent:12.3}}).summary,'—'));
+test('countdown ceiling',()=>assert.equal(remaining(299001),'05:00'));
+test('countdown clamps expired',()=>assert.equal(remaining(-100),'00:00'));
+test('five-minute countdown',()=>assert.equal(remaining(300000),'05:00'));
+test('light states retained',()=>assert.deepEqual(Object.keys(stateInfo).sort(),['done','error','off','waiting','working']));

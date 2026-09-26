@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light"><title>AI Light</title>
+  <link rel="stylesheet" href="styles.css"><script type="module" src="app.js"></script>
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand"><span class="brand-icon"><i></i><i></i><i></i></span><div>AI LIGHT<small>DESKTOP COMPANION</small></div></div>
+    <div class="nav-caption">工作空间</div>
+    <nav aria-label="主导航">
+      <button class="nav active" data-page="overview"><span>◫</span>状态总览</button>
+      <button class="nav" data-page="effects"><span>◉</span>灯效与规则</button>
+      <button class="nav" data-page="sound"><span>♫</span>声音提醒</button>
+      <button class="nav" data-page="device"><span>⌁</span>设备与电池</button>
+      <button class="nav" data-page="connect"><span>⇄</span>Codex 接入</button>
+      <button class="nav" data-page="events"><span>≡</span>事件记录</button>
+      <button class="nav" data-page="preferences"><span>⚙</span>偏好设置</button>
+    </nav>
+    <div class="sidebar-footer"><div><span class="dot" id="sidebar-dot"></span><span id="sidebar-label">正在启动</span></div><p>LOCAL FIRST · RUST</p><span class="version" id="version">v0.3.2</span></div>
+  </aside>
+  <main class="main">
+    <header class="topbar"><div class="breadcrumb">AI Light <span>/</span> <b id="page-title">状态总览</b></div><div class="top-actions"><span class="privacy">◈ 仅在本地运行</span><button class="icon-button" id="theme-toggle" title="切换深浅主题" aria-label="切换深浅主题">◐</button></div></header>
+    <div class="content">
+      <div class="banner" id="runtime-banner" hidden>请通过编译后的 AI Light 程序打开此界面。浏览器预览不会连接设备或执行系统操作。</div>
+      <div class="battery-warning" id="battery-warning" role="status" hidden></div>
+      <section class="page" id="page-overview">
+        <div class="page-heading"><div><div class="eyebrow">YOUR WORK, AT A GLANCE</div><h1>专注工作，抬眼知进度。</h1><p>让桌面上的一点光，告诉你什么时候需要回来。</p></div><button class="secondary" id="pause">暂停灯光</button></div>
+        <div class="hero" id="hero" data-state="off">
+          <div class="hero-copy"><div class="status-tag"><span class="dot"></span><span id="mode-label">自动模式</span></div><h2 id="state-label">正在连接本地程序</h2><p id="state-description">设备与来源状态将在这里显示。</p><div class="hero-bottom"><span class="pill" id="effect-label">等待状态同步</span><span class="countdown" id="countdown"></span></div></div>
+          <div class="lamp-stage" aria-label="逻辑灯态示意，不代表设备回执"><div class="stage-ring ring-one"></div><div class="stage-ring ring-two"></div><div class="traffic-light"><div class="lamp red"></div><div class="lamp yellow"></div><div class="lamp green"></div></div><div class="lamp-shadow"></div><span class="stage-caption">STATE VISUALIZATION</span></div>
+        </div>
+        <div class="metrics">
+          <article class="metric"><div class="metric-top">设备接口 <span>⌁</span></div><strong id="device-summary">检查中</strong><p id="device-caption">YY-AiLight</p></article>
+          <article class="metric"><div class="metric-top">设备电量 <span class="battery-glyph">▰</span></div><div class="battery-number"><strong id="battery-summary">—</strong><span id="battery-old"></span></div><div class="battery-track"><i id="battery-fill"></i></div><p id="battery-guard-summary">等待电源采样</p><p class="mini-voltage" id="voltage-summary">— · 电池电压</p></article>
+          <article class="metric"><div class="metric-top">Ubuntu 来源 <span>⇄</span></div><strong id="source-summary">等待接入</strong><p id="source-caption">没有收到状态心跳</p></article>
+        </div>
+        <div class="sound-strip"><div><span class="mini-caption">SOUND REMINDERS</span><strong id="sound-overview">等待声音状态</strong><p id="sound-overview-detail">按任务状态提醒，低电量自动静音。</p></div><div class="under-actions"><button class="secondary" id="stop-sound-overview">停止本次声音</button><button class="text-button" data-page="sound">声音设置 →</button></div></div>
+        <div class="section-heading"><h3>灯效测试</h3><span>独立预览，不覆盖真实任务记录</span></div>
+        <div class="test-grid"><button class="test-button" data-test="working"><i class="yellow-dot"></i><b>工作中</b><small>黄灯呼吸</small></button><button class="test-button" data-test="waiting"><i class="yellow-dot"></i><b>等待处理</b><small>黄灯常亮</small></button><button class="test-button" data-test="done"><i class="green-dot"></i><b>任务完成</b><small>绿灯常亮</small></button><button class="test-button" data-test="error"><i class="red-dot"></i><b>执行异常</b><small>红灯呼吸</small></button></div>
+        <div class="under-actions"><span id="preview-hint">每种灯效测试 10 秒，然后恢复最新自动状态。</span><button class="text-button" id="cancel-preview">结束预览</button><button class="text-button" id="timer-test">测试五分钟熄灯</button></div>
+        <div class="section-heading"><h3>最近动态</h3><button class="text-button" data-page="events">查看全部 →</button></div><div id="recent-events" class="event-list compact"><div class="empty">尚未收到事件</div></div>
+      </section>
+      <section class="page" id="page-effects" hidden>
+        <div class="page-heading"><div class="eyebrow">LIGHT & RHYTHM</div><h1>一点柔和的提醒。</h1><p>呼吸由灯具固件执行；电脑不会高频循环开关灯。</p></div>
+        <div class="panel"><h3>柔和呼吸</h3><div class="field"><label for="period">呼吸周期</label><div class="range-row"><input id="period" type="range" min="1000" max="5000" step="100" value="3000"><output id="period-value">3.0 秒</output></div><p>工作与异常共用。渐亮、渐暗各不超过半个周期。</p></div><div class="field"><label for="fade">渐变时间</label><div class="range-row"><input id="fade" type="range" min="0" max="1500" step="100" value="1500"><output id="fade-value">1.5 秒</output></div></div><div class="field"><label for="done-seconds">任务完成后熄灯</label><select id="done-seconds"><option value="60">1 分钟</option><option value="180">3 分钟</option><option value="300" selected>5 分钟</option><option value="600">10 分钟</option></select><p>新设置只影响之后收到的完成状态，不延长已经开始的倒计时。</p></div><button class="primary" id="save-effects">保存灯效</button></div>
+        <div class="panel subdued"><h3>状态规则</h3><div class="rule"><span><i class="yellow-dot"></i>工作中</span><span>黄灯渐亮、渐暗</span></div><div class="rule"><span><i class="yellow-dot"></i>等待人工</span><span>黄灯常亮</span></div><div class="rule"><span><i class="green-dot"></i>任务完成</span><span>绿灯常亮，到期熄灭</span></div><div class="rule"><span><i class="red-dot"></i>执行异常</span><span>红灯渐亮、渐暗</span></div><p class="footnote">多会话优先级：异常 → 等待人工 → 工作 → 完成。来源失联不是执行异常。</p></div>
+      </section>
+      <section class="page" id="page-sound" hidden>
+        <div class="page-heading"><div><div class="eyebrow">A GENTLE NUDGE</div><h1>需要你时，轻声提醒。</h1><p>一次声音是一小段，持续提醒由后台按间隔重发。无需一直打开窗口。</p></div></div>
+        <div class="panel sound-master">
+          <div class="setting-row"><div><h3>蜂鸣器总开关</h3><p>开关立即生效并保存。关闭时停止声音；重新开启不补播旧提醒。</p></div><input class="switch" type="checkbox" id="sound-enabled" aria-label="蜂鸣器总开关"></div>
+          <div class="sound-live"><div><span class="mini-caption">NOW</span><h2 id="sound-status">等待状态</h2><p id="sound-reason" aria-live="polite"></p></div><div class="sound-countdown"><strong id="sound-next">—</strong><span id="sound-rounds">尚未发送</span></div></div>
+          <div class="under-actions"><button class="secondary" id="stop-sound">停止本次提醒 / 试听</button><span id="sound-limit-live"></span></div>
+          <p class="error-text" id="sound-error"></p>
+        </div>
+        <div class="panel"><div class="section-heading no-margin"><h3>默认音量</h3><span>相对调节档位 · 非线性响度</span></div><div class="field"><label for="sound-default-volume">使用默认音量的规则会跟随这里</label><div class="range-row"><input id="sound-default-volume" type="range" min="0" max="100" step="1" value="70"><output id="sound-default-value">70%</output></div><p id="sound-default-raw">100% 映射到原始驱动值 50，不会写入会导致无声的原始值 100。</p></div></div>
+        <div class="section-heading"><h3>按状态提醒</h3><span>异常 ＞ 等待人工 ＞ 工作（可选）＞ 完成 · 不排队补响</span></div>
+        <div class="sound-rules" id="sound-rules"></div>
+        <div class="sound-save-bar"><div><strong id="sound-dirty">规则已同步</strong><p>新规则只用于之后的状态；保存声音改动会停止当前这轮。</p></div><button class="primary" id="save-sound">保存声音规则</button><button class="text-button" id="reset-sound">恢复默认</button></div>
+        <div class="notice"><b>低电量保护始终启用。</b>有效电量 ≤20% 取消蜂鸣和试听；连续两次 ≥25%、间隔至少 10 秒才解除。电量未知、读取失败或过期也不启动声音。恢复后不补播已取消的提醒。</div>
+        <div class="notice">单次短鸣 / 双响 / 三响 / 长鸣的节奏由固件决定，不提供未验证的频率或单音长度控制。每轮最长保留 5 秒后发送停止；重复间隔最短 5 秒。音量只在所需原始值改变时写入，确认读回后再响。</div>
+      </section>
+      <section class="page" id="page-device" hidden>
+        <div class="page-heading"><div><div class="eyebrow">DEVICE & BATTERY</div><h1>电量与电压，清楚就好。</h1><p>只显示读到的数据。低电量会暂停声音，不改变任务灯光。</p></div><button class="secondary" id="reconnect">重新连接</button></div>
+        <div class="two-columns"><article class="panel"><span class="mini-caption">PAIRED DEVICE</span><h2 class="device-name" id="device-name">YY-AiLight</h2><div class="detail-row"><span>VID / PID</span><code>07D7 : 6B01</code></div><div class="detail-row"><span>控制接口</span><span>BLE HID · Report 2 / 65 bytes</span></div><div class="detail-row"><span>接口枚举</span><span id="device-presence">—</span></div><div class="detail-row"><span>最近灯光系统输出</span><span id="output-status">—</span></div><div class="detail-row"><span>灯光协议回执</span><span id="ack-status">尚未确认</span></div><p class="error-text" id="device-error"></p><button class="text-button" id="bluetooth">打开 Windows 蓝牙设置 ↗</button></article>
+          <article class="panel"><div class="section-heading no-margin"><h3>电池电量</h3><button class="text-button" id="battery-refresh">刷新</button></div><div class="large-battery"><span id="device-percent">—</span><small id="device-percent-unit"></small></div><span class="battery-badge" id="device-low-status">等待有效电量</span><div class="detail-row"><span>蜂鸣保护</span><span id="battery-sound-status">等待确认</span></div><div class="detail-row"><span>最近有效读取</span><span id="battery-updated">尚未读取</span></div><p id="battery-note" class="footnote">标准 BLE 2A19，直接读取设备，不使用缓存值。</p><p id="battery-error" class="error-text"></p></article></div>
+        <article class="panel voltage-panel"><div class="voltage-heading"><div><span class="mini-caption">BATTERY VOLTAGE</span><h2 id="device-voltage">—</h2></div><div><div class="mini-caption">LAST READING</div><p id="power-updated">尚未读取</p></div></div><p id="power-source" class="footnote">HID READ 0x14 · 小端 u16 · mV</p><p id="power-error" class="error-text"></p><details class="voltage-raw"><summary>原始应答</summary><code id="power-raw-frame">—</code></details></article>
+        <div class="panel"><h3>目标设备</h3><div class="field"><button class="text-button" id="scan-devices">扫描已配对的兼容灯</button><select id="discovered-devices" aria-label="选择灯具" hidden></select></div><div class="field"><label for="serial">设备序列号 / 蓝牙地址（不含冒号）</label><input id="serial" maxlength="12" spellcheck="false" value="" placeholder="配对后自动发现，或输入 12 位地址"><p>同时核对 VID、PID、Usage 和序列号，不控制同机其他 HID 设备。</p></div><div class="field"><label for="battery-poll">常规电量刷新间隔</label><select id="battery-poll"><option value="30">30 秒</option><option value="60">60 秒</option><option value="120">120 秒</option></select><p>蜂鸣开启时最多间隔 30 秒；低电量或读数未知时约每 10 秒尝试读取。失败请求另有超时。</p></div><div class="setting-row"><div><h3>读取电池电压</h3><p>每 15 秒只读 0x14，不分析充放电。关闭不影响标准电量和低电量保护。</p></div><input id="voltage-enabled" class="switch" type="checkbox" aria-label="读取电池电压"></div><button class="primary" id="save-device">保存设备设置</button></div>
+      </section>
+      <section class="page" id="page-connect" hidden>
+        <div class="page-heading"><div class="eyebrow">UBUNTU → WINDOWS → LIGHT</div><h1>把工作状态带到桌面。</h1><p>Rust hook 只在 Ubuntu 本地更新状态，不调用模型。</p></div>
+        <div class="pipeline"><span>Codex 原生事件</span><b>→</b><span>Rust 转发器</span><b>→</b><span>Windows 灯控</span><b>→</b><span>实体灯</span></div>
+        <div class="two-columns"><div class="panel"><h3>导出连接配置</h3><div class="field"><label for="host-ip">Windows 宿主机 IP</label><input id="host-ip" placeholder="例如 192.168.3.10" spellcheck="false"><p>填 Ubuntu 虚拟机能够访问的宿主机地址，不是虚拟机自己的 IP。</p></div><div class="field"><label for="source-id">来源名称</label><input id="source-id" value="ubuntu-vm" maxlength="128" spellcheck="false"></div><button class="primary" id="export-client">导出 client.json</button><button class="text-button" id="open-exports">打开导出目录</button><p class="footnote">文件包含访问密钥。仅复制到自己的 Ubuntu，勿发到聊天或提交到公开仓库。</p></div>
+          <div class="panel"><h3>接收服务</h3><div class="detail-row"><span>当前监听</span><code id="receiver-address">—</code></div><div class="detail-row"><span>服务状态</span><span id="receiver-status">检查中</span></div><p class="error-text" id="receiver-error"></p><div class="field"><label for="bind-host">监听 IP</label><input id="bind-host" value="0.0.0.0" spellcheck="false"></div><div class="field"><label for="port">端口</label><input id="port" type="number" min="1024" max="65535" value="17322"></div><div class="field"><label for="allowed-sources">仅允许的虚拟机 IP</label><input id="allowed-sources" placeholder="多个地址用逗号分开" spellcheck="false"><p>为空时仅接受本机和私有网络来源；建议明确填写虚拟机 IP。</p></div><button class="secondary" id="save-network">保存网络设置</button><p class="footnote">变更监听 IP 或端口后，从托盘退出再打开才会生效。程序不会自行修改防火墙。</p></div></div>
+        <div class="panel"><h3>Ubuntu 安装</h3><p>使用发行包中的 agent，或在源码根目录编译；client.json 使用上面导出的文件：</p><pre><code>cargo build -p light-agent --release --locked
+./target/release/light-agent install --client ./client.json
+~/.local/bin/light-agent check</code></pre><p class="footnote">之后重启 Codex，打开 /hooks 审阅并信任新增 hooks。完整步骤见仓库 README。无 /hooks 的版本不能假定已接入。</p></div>
+        <div class="panel"><h3>来源心跳</h3><div id="sources-list" class="event-list"><div class="empty">尚无来源；默认 15 秒一次心跳。</div></div></div>
+      </section>
+      <section class="page" id="page-events" hidden>
+        <div class="page-heading"><div><div class="eyebrow">LOCAL ACTIVITY</div><h1>知道每一次变化的原因。</h1><p>仅记录状态与连接诊断，不保存提示词、回答或工具内容。</p></div><button class="secondary" id="export-diagnostics">导出诊断</button></div><div class="panel"><div id="events-list" class="event-list"><div class="empty">尚未收到事件</div></div></div><div class="notice">诊断不含接口密钥，但包含设备标识与局域网地址。分享前请自行检查。当前事件记录为有界内存日志，退出后清空。</div>
+      </section>
+      <section class="page" id="page-preferences" hidden>
+        <div class="page-heading"><div class="eyebrow">MAKE IT YOURS</div><h1>安静地待在后台。</h1><p>把日常操作留给托盘，把注意力留给工作。</p></div>
+        <div class="panel"><div class="setting-row"><div><h3>登录 Windows 后自动启动</h3><p>只进入托盘，不弹出主窗口；不注册系统服务。</p></div><input type="checkbox" class="switch" id="autostart" aria-label="登录自启"></div><div class="setting-row"><div><h3>退出时尝试熄灯</h3><p>断连时无法保证物理熄灯，但程序仍会正常退出。</p></div><input type="checkbox" class="switch" id="exit-off" checked aria-label="退出时熄灯"></div><div class="setting-row"><div><h3>减少界面动画</h3><p>不改变实体灯的呼吸效果。</p></div><input type="checkbox" class="switch" id="reduce-motion" aria-label="减少动画"></div><div class="setting-row"><div><h3>界面主题</h3><p>系统字体，无外部字体或 CDN。</p></div><select id="theme"><option value="dark">深石墨</option><option value="light">暖白</option><option value="system">跟随系统</option></select></div><button class="primary" id="save-preferences">保存偏好</button></div>
+        <div class="panel subdued"><h3>窗口与托盘</h3><p>右上角 ×：隐藏窗口，继续工作。单击托盘图标：打开窗口。从开始菜单再次启动：恢复同一实例。托盘“退出”：停止整个后台。</p><p>Windows 可能将图标放进托盘折叠区，需要时可手动拖到外侧。</p><div class="under-actions"><button class="secondary" id="open-data">打开配置目录</button><button class="danger" id="quit">退出 AI Light</button></div></div>
+        <div class="notice">状态检测存在边界：普通文字提问使用本地启发式；CLI 未退出的部分网络异常不一定有 hook。绿灯表示回合结束，不是任务结果正确性的认证。</div>
+      </section>
+    </div>
+  </main>
+</div>
+<div class="toast" id="toast" role="status" hidden></div>
+</body></html>

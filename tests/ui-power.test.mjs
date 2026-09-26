@@ -1,0 +1,12 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { powerPresentation as p } from '../ui/view-model.js';
+const data={enabled:true,stale:false,reading:{voltage_mv:3879,raw_14:'5E 5E 05 82 14 27 0F BB'}};
+test('measured voltage displayed',()=>assert.equal(p(data).voltage,'3.879 V'));
+test('unavailable is not zero',()=>assert.equal(p({enabled:true}).voltage,'—'));
+test('old sample labeled',()=>assert.equal(p({...data,stale:true}).voltage,'3.879 V · 上次读数'));
+test('disabled sampling shows only history',()=>assert.equal(p({...data,enabled:false}).old,true));
+test('invalid voltage rejected',()=>assert.equal(p({...data,reading:{voltage_mv:65535}}).voltage,'—'));
+test('unit source confirmed as LE millivolts',()=>assert.match(p(data).source,/小端 u16 · mV/));
+test('raw reply preserved',()=>assert.equal(p(data).raw,data.reading.raw_14));
+test('no inferred charging field',()=>{const v=p({...data,trend:{state:'possible_charging'}});assert.equal('trend' in v,false);assert.equal('summary' in v,false);});

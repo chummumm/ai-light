@@ -2,24 +2,198 @@ name: Build and release
 on:
   push:
     branches: [main]
+    tags: ['v*']
+  pull_request:
   workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish a new unsigned pre-release after all builds succeed'
+        type: boolean
+        default: false
 permissions:
   contents: read
+concurrency:
+  group: ai-light-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
-  core-tests:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+      version: ${{ steps.source.outputs.version }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: ${{ github.event_name != 'pull_request' }}
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: '22'
+      - name: Install Rust
+        run: rustup toolchain install 1.98.1 --profile minimal
+      - name: Bootstrap a missing lockfile on the trusted main branch only
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ ! -f Cargo.lock ]]; then
+            if [[ "$GITHUB_REPOSITORY" == 'chummumm/ai-light' ]]; then
+              gh run download 36237085086 --name bootstrap-lockfile --dir "$RUNNER_TEMP/ai-light-lock"
+              cp "$RUNNER_TEMP/ai-light-lock/Cargo.lock" Cargo.lock
+            else
+              cargo generate-lockfile
+            fi
+            cargo metadata --no-deps --format-version 1 --locked >/dev/null
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add Cargo.lock
+            git commit -m 'build: commit tested dependency lockfile [skip ci]'
+            git push origin HEAD:main
+          fi
+      - name: Pin this run to the exact source revision
+        id: source
+        run: |
+          test -f Cargo.lock
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          node --input-type=module -e 'import fs from "node:fs";const v=JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json")).version;const c=fs.readFileSync("Cargo.toml","utf8");if(!c.includes(`version = "${v}"`))throw Error("version mismatch");fs.appendFileSync(process.env.GITHUB_OUTPUT,`version=${v}\n`);'
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-rust-1.98.1-${{ hashFiles('Cargo.lock') }}
+      - name: Rust and UI tests
+        run: |
+          set -o pipefail
+          cargo test -p light-core -p light-agent --locked 2>&1 | tee rust-tests.log
+          node --test tests/*.test.mjs | tee ui-tests.log
+          node scripts/check-ui.mjs
+      - name: Store test results and dependency lock
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-results
+          path: |
+            Cargo.lock
+            rust-tests.log
+            ui-tests.log
+          retention-days: 30
+  windows:
+    needs: prepare
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f
+        with:
+          node-version: '22'
+      - name: Install native MSVC Rust toolchain
+        run: |
+          rustup toolchain install 1.98.1 --profile minimal
+          rustup target add x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw 'Rust setup failed' }
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-rust-1.98.1-${{ hashFiles('Cargo.lock') }}
+      - name: Native Windows tests and license collection
+        run: |
+          cargo test -p light-core -p light-agent --target x86_64-pc-windows-msvc --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Windows tests failed' }
+          node scripts/collect-licenses.mjs x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw 'License collection failed' }
+          node -e 'require("fs").writeFileSync("src-tauri/tauri.licenses.conf.json",JSON.stringify({bundle:{resources:["../third-party/**/*","../LICENSE","../THIRD-PARTY-NOTICES.md"]}}))'
+      - name: Compile native Windows application and NSIS installer
+        env:
+          CARGO_BUILD_JOBS: '2'
+        run: |
+          npm install --global '@tauri-apps/cli@2.11.5'
+          if ($LASTEXITCODE -ne 0) { throw 'Tauri CLI install failed' }
+          if (Test-Path target/x86_64-pc-windows-msvc/release/bundle/nsis) {
+            Remove-Item target/x86_64-pc-windows-msvc/release/bundle/nsis -Recurse -Force
+          }
+          tauri build --target x86_64-pc-windows-msvc --bundles nsis --config src-tauri/tauri.licenses.conf.json -- --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Windows build failed' }
+      - name: Collect only this build's installer
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          $files = @(Get-ChildItem target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe)
+          if ($files.Count -ne 1) { throw 'Expected exactly one NSIS installer' }
+          New-Item dist/publish -ItemType Directory -Force | Out-Null
+          Copy-Item $files[0].FullName "dist/publish/AI-Light-$env:VERSION-windows-x64-setup.exe"
+          Copy-Item third-party dist/publish -Recurse
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: windows-x64
+          path: dist/publish/
+          if-no-files-found: error
+          retention-days: 30
+  ubuntu:
+    needs: prepare
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - name: Install pinned Rust
-        run: rustup toolchain install 1.98.1 --profile minimal
-      - name: Resolve and test core and agent
-        run: |
-          cargo generate-lockfile
-          cargo test -p light-core -p light-agent --locked
-      - name: Save resolved dependencies
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          name: bootstrap-lockfile
-          path: Cargo.lock
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f
+        with:
+          node-version: '22'
+      - run: rustup toolchain install 1.98.1 --profile minimal
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-rust-1.98.1-${{ hashFiles('Cargo.lock') }}
+      - name: Compile and package Ubuntu agent
+        run: |
+          cargo build -p light-agent --release --locked
+          node scripts/collect-licenses.mjs x86_64-unknown-linux-gnu
+          mkdir -p dist/package dist/publish
+          cp target/release/light-agent LICENSE README.md THIRD-PARTY-NOTICES.md Cargo.lock dist/package/
+          cp -R docs third-party dist/package/
+          tar -czf dist/publish/ai-light-agent-linux-x86_64.tar.gz -C dist/package .
+          cp third-party/PACKAGES.json dist/publish/dependency-inventory.json
+          ./target/release/light-agent > dist/publish/agent-help.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ubuntu-agent
+          path: dist/publish/
           if-no-files-found: error
+          retention-days: 30
+  release:
+    needs: [prepare, windows, ubuntu]
+    if: github.event_name != 'pull_request' && (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (inputs.publish == true || contains(github.event.head_commit.message, '[release]'))))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: incoming
+      - name: Publish verified build assets as a pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.prepare.outputs.sha }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+        run: bash scripts/release.sh
