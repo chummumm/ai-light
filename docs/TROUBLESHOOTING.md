@@ -37,6 +37,8 @@ grep -n '^[[:space:]]*notify[[:space:]]*=' "${CODEX_HOME:-$HOME/.codex}/config.t
 
 如果已有自己的 notify，安装器会保留它，因此不会自动获得 exec 完成兜底。不要直接覆盖原通知器；在现有 notifier 中把同一 JSON payload 再调用一次 `~/.local/bin/light-agent notify "$PAYLOAD"`。
 
+0.3.3 同时识别当前 Codex 官方隐藏 `thread_title` 临时任务的固定指令，只在内存判断并忽略/清理该 helper 状态，避免其 Working 优先级压住已经完成的主任务。普通用户自己的“生成标题”请求不会因为关键词相似就被过滤。
+
 日志：
 
 ```bash
