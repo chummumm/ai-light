@@ -324,7 +324,9 @@ impl Observer {
 
 #[cfg(test)]mod legacy_watch_tests{
     use super::*;
-    fn tmp()->PathBuf{let p=std::env::temp_dir().join(format!("ailight-legacy-test-{}",uuid::Uuid::new_v4()));fs::create_dir_all(&p).unwrap();p}
+    // Registered roots are canonical in production; preserve that contract on
+    // Windows too, where canonicalization adds the extended-length path prefix.
+    fn tmp()->PathBuf{let p=std::env::temp_dir().join(format!("ailight-legacy-test-{}",uuid::Uuid::new_v4()));fs::create_dir_all(&p).unwrap();fs::canonicalize(p).unwrap()}
     #[test]fn real_subagent_is_not_internal(){let dir=tmp();let p=dir.join("x.jsonl");fs::write(&p,"{\"type\":\"session_meta\",\"payload\":{\"id\":\"child\",\"source\":{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"main\",\"depth\":1}}}}}\n").unwrap();let mut c=Cursor::default();assert!(c.poll(&p,"child").unwrap());assert!(!c.internal);fs::remove_dir_all(dir).unwrap();}
     #[test]fn unknown_subagent_is_not_internal(){let dir=tmp();let p=dir.join("x.jsonl");for source in [serde_json::json!("subagent"),serde_json::json!({"subagent":"unknown"})]{fs::write(&p,format!("{}\n",serde_json::json!({"type":"session_meta","payload":{"id":"s","source":source}}))).unwrap();let mut c=Cursor::default();assert!(c.poll(&p,"s").unwrap());assert!(!c.internal);}fs::remove_dir_all(dir).unwrap();}
     #[test]fn vscode_main_is_not_internal(){let dir=tmp();let p=dir.join("x.jsonl");fs::write(&p,"{\"type\":\"session_meta\",\"payload\":{\"id\":\"s\",\"cli_version\":\"0.157.1\",\"source\":\"vscode\"}}\n").unwrap();let mut c=Cursor::default();assert!(c.poll(&p,"s").unwrap());assert!(!c.internal);fs::remove_dir_all(dir).unwrap();}
