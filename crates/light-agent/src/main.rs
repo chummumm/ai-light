@@ -2,6 +2,7 @@ mod install;
 mod relay;
 mod store;
 mod lifecycle;
+mod legacy;
 mod owner;
 mod watch;
 mod upgrade;

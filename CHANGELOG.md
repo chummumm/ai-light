@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.5 — Honest unverified legacy records
+
+- Quarantine only pre-observer, unbound UserPromptSubmit/Working records after an error-free search of registered roots finds no journal. Preserve original state and timestamps; exclusion is not task success. Fresh accepted hooks or matching journal evidence restore participation.
+- Unknown legacy records no longer indefinitely override real completion. UI explicitly shows unverified count and limits the meaning of green to participating tasks.
+- Never filter all subagents as internal: only an explicitly identified thread_title helper is removed. Already registered real/unknown subagents remain.
+- Add filesystem, state-race, projection and UI regression tests. No process interruption, state clearing, new hook registration or dependency upgrades.
+
 ## 0.3.4 — Evidence-based session lifecycle
 
 - Reconcile already-known sessions with read-only, session/turn-correlated Codex lifecycle records; recover missed completion using original timestamps rather than replaying old green-light timers.
