@@ -130,7 +130,7 @@ pub fn uninstall()->Result<()> {
 mod tests {
     use super::*;
     #[test] fn quotes_spaces_and_apostrophes(){assert_eq!(shell_quote("a b'c"),"'a b'\"'\"'c'");}
-    #[test] fn escapes_systemd_specifiers(){assert_eq!(systemd_quote("/home/a%b/$x"),"\"/home/a%%b/$x\"");}
+    #[test] fn escapes_systemd_specifiers(){assert_eq!(systemd_quote("/home/a%b/$x"),"\"/home/a%%b/$$x\"");}
     #[test] fn notify_added_without_reformatting_existing_config(){
         let original="# keep me\nmodel = \"gpt-test\"\n\n[features]\ncodex_hooks = true\n";
         let ours="notify = [\"/home/u/.local/bin/light-agent\", \"notify\"]";
