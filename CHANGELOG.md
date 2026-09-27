@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.6 — Completion countdown repair
+
+- A received completion now retains its original local deadline when the source heartbeat times out. Working/waiting/error liveness protections are unchanged.
+- Saving a new completion duration updates pending countdowns from the original completion time; expired reminders are not revived.
+- Duplicate messages do not extend timers, and offline cached completions do not enable sound replay.
+- The authenticated status API now includes configured duration, source timeout, and remaining completion time for diagnosis.
+- No firmware, BLE protocol, Ubuntu hooks or task state is changed. Upgrade Windows to receive the fix; Ubuntu 0.3.5 remains compatible.
+- CI includes deterministic countdown regressions. Stable publishing remains gated on both platform builds and explicit release intent.
+
 ## 0.3.5 — Honest unverified legacy records
 
 - Quarantine only pre-observer, unbound UserPromptSubmit/Working records after an error-free search of registered roots finds no journal. Preserve original state and timestamps; exclusion is not task success. Fresh accepted hooks or matching journal evidence restore participation.

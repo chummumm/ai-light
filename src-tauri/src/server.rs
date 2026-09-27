@@ -18,7 +18,9 @@ async fn status(State(s):State<Arc<Shared>>,ConnectInfo(peer):ConnectInfo<Socket
     authorize(&s,peer.ip(),&headers)?;
     let v=s.view();
     Ok(Json(json!({"version":v.version,"output":v.output,"paused":v.paused,"receiver":v.receiver,
-        "sources":v.aggregate.sources,"hardware":v.hardware,"battery":v.battery})))
+        "sources":v.aggregate.sources,"hardware":v.hardware,"battery":v.battery,
+        "timing":{"done_seconds":v.config.done_seconds,"source_timeout_seconds":v.config.source_timeout_seconds,
+            "remaining_ms":v.aggregate.remaining_ms}})))
 }
 async fn sync(State(s):State<Arc<Shared>>,ConnectInfo(peer):ConnectInfo<SocketAddr>,headers:HeaderMap,Json(snapshot):Json<Snapshot>)->ApiResult{
     authorize(&s,peer.ip(),&headers)?;

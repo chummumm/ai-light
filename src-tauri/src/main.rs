@@ -53,6 +53,11 @@ fn persist_settings(shared:&Shared,mut settings:config::Config)->Result<()> {
         d.hardware=state::HardwareView::default();d.power=state::PowerData::default();
         d.sound=light_core::sound::SoundEngine::new(shared.now());
     }
+    if d.config.done_seconds!=settings.done_seconds {
+        let now=shared.now();
+        d.engine.reconfigure_done_timer(now,settings.done_seconds)?;
+        d.log(now,"settings",format!("完成计时改为 {} 秒；未到期计时按原完成时间调整，已到期提醒不重播",settings.done_seconds));
+    }
     d.config=settings;
     d.log(shared.now(),"settings","设置已保存；声音设置改变不会补播旧提醒".into());
     drop(d);shared.request_refresh();Ok(())
