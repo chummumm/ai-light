@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.4 — Evidence-based session lifecycle
+
+- Reconcile already-known sessions with read-only, session/turn-correlated Codex lifecycle records; recover missed completion using original timestamps rather than replaying old green-light timers.
+- Track exact Codex process identity (PID, start tick and boot ID), with conservative handling of unreadable or missing evidence. Never expire real tasks merely because they have been silent.
+- Prevent late tool results, duplicate prompts and duplicate completion notifications from reopening a finished turn. Preserve legitimate continuation after a soft Stop hook.
+- Remove verified auxiliary/subagent records from aggregation, expire active manual tests after 60 seconds, and collect old off/done records even when no hook arrives.
+- Add an atomic `light-agent upgrade` path that preserves Codex tasks, existing hooks, connection configuration and state. Only the AI Light relay is restarted.
+- Separate stored record counts from working/waiting/error/done counts in the Windows UI and add expandable per-session diagnostics.
+- Add regression tests for partial journal writes, wrong IDs, concurrent state changes, PID reuse, notifications, eight-record migration and long-running silent tasks.
+- See [session lifecycle and no-interruption upgrade](docs/SESSION-LIFECYCLE.md) for supported formats, privacy and remaining unknown-evidence cases.
+
 ## 0.3.3 — Reliable Codex turn completion
 
 - Add a user-level Codex `notify` completion fallback for `agent-turn-complete`, covering environments where `Stop` is not emitted (notably affected `codex exec` versions).

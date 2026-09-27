@@ -34,7 +34,7 @@ fn notify(raw:Option<&str>)->Result<()> {
     anyhow::ensure!(raw.len()<=1024*1024,"notify input exceeded 1 MiB limit");
     let value:serde_json::Value=serde_json::from_str(raw)?;
     let cfg=store::load_config()?;
-    store::update(|s|s.apply_notify(&value,now_ms(),cfg.question_heuristic))
+    watch::notify(&value,now_ms(),cfg.question_heuristic)
 }
 fn parse_state(s:&str)->Result<LightState>{
     match s {"working"=>Ok(LightState::Working),"waiting"=>Ok(LightState::Waiting),"done"=>Ok(LightState::Done),"error"=>Ok(LightState::Error),"off"=>Ok(LightState::Off),_=>anyhow::bail!("expected working|waiting|done|error|off")}

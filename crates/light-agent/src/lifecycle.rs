@@ -5,18 +5,18 @@ use serde_json::{json, Value};
 
 fn text<'a>(v:&'a Value,k:&str)->&'a str { v.get(k).and_then(Value::as_str).unwrap_or("") }
 pub fn terminal(s:&LocalSession)->bool {
-    matches!(s.event.as_str(),"Stop"|"Interrupt"|"JournalComplete"|"JournalAborted"|"OwnerExited")
+    matches!(s.event.as_str(),"Stop"|"NotifyComplete"|"Interrupt"|"JournalComplete"|"JournalAborted"|"OwnerExited")
 }
 /// All command-hook input goes through this gate before the legacy reducer.
 pub fn hook(s:&mut LocalState,v:&Value,now:u64,heuristic:bool,run:&str)->Result<bool> {
     let event=text(v,"hook_event_name");
     if let Some(old)=s.sessions.get(text(v,"session_id")) {
         let turn=text(v,"turn_id");
-        if event=="UserPromptSubmit" && !turn.is_empty() && turn==old.turn {
+        if event=="UserPromptSubmit" && old.event!="SessionStart" && !turn.is_empty() && turn==old.turn {
             // Redelivery must not reopen a finished turn or reset its timer.
             return Ok(false);
         }
-        if terminal(old) && !matches!(event,"UserPromptSubmit"|"SessionStart"|"SessionEnd") {
+        if terminal(old) && !(old.event=="Stop"&&event=="PreToolUse") && !matches!(event,"UserPromptSubmit"|"SessionStart"|"SessionEnd") {
             // A new prompt, not a late tool callback, starts the next turn.
             return Ok(false);
         }
@@ -100,7 +100,7 @@ pub fn remove_known(s:&mut LocalState,expected:&LocalSession)->bool {
 }
 pub fn owner_exited(s:&mut LocalState,expected:&LocalSession,now:u64)->bool {
     let Some(cur)=s.sessions.get(&expected.id)else{return false;};
-    if cur.version!=expected.version||cur.turn!=expected.turn||terminal(cur){return false;}
+    if cur.version!=expected.version||cur.turn!=expected.turn||matches!(cur.state,LightState::Done|LightState::Off){return false;}
     // Losing the process is not successful completion. Retain a diagnostic record.
     s.emit(&expected.id,LightState::Off,now);
     s.sessions.get_mut(&expected.id).unwrap().event="OwnerExited".into();true
@@ -119,7 +119,7 @@ pub fn maintain(s:&mut LocalState,now:u64)->bool {
     fn v(event:&str,turn:&str)->Value{json!({"hook_event_name":event,"session_id":"s","turn_id":turn,"tool_name":"Bash","tool_use_id":"x"})}
     fn start()->LocalState{let mut s=LocalState::default();hook(&mut s,&v("UserPromptSubmit","t"),100,true,"").unwrap();s}
     fn e(kind:Kind,at:u64)->Evidence{Evidence{turn:"t".into(),kind,at,question:false,failed:false}}
-    #[test]fn late_tool_cannot_reopen(){for event in ["PostToolUse","PreToolUse","PermissionRequest"]{let mut s=start();hook(&mut s,&v("Stop","t"),200,true,"").unwrap();assert!(!hook(&mut s,&v(event,"t"),300,true,"").unwrap());assert_eq!(s.sessions["s"].state,LightState::Done);}}
+    #[test]fn late_tool_cannot_reopen(){for event in ["PostToolUse","PermissionRequest"]{let mut s=start();hook(&mut s,&v("Stop","t"),200,true,"").unwrap();assert!(!hook(&mut s,&v(event,"t"),300,true,"").unwrap());assert_eq!(s.sessions["s"].state,LightState::Done);}}
     #[test]fn duplicate_prompt_cannot_reopen(){let mut s=start();hook(&mut s,&v("Stop","t"),200,true,"").unwrap();assert!(!hook(&mut s,&v("UserPromptSubmit","t"),300,true,"").unwrap());}
     #[test]fn next_turn_can_start(){let mut s=start();hook(&mut s,&v("Stop","t"),200,true,"").unwrap();assert!(hook(&mut s,&v("UserPromptSubmit","u"),300,true,"").unwrap());assert_eq!(s.sessions["s"].state,LightState::Working);}
     #[test]fn long_silent_work_survives(){let mut s=start();assert!(!maintain(&mut s,86_400_000));assert_eq!(s.sessions["s"].state,LightState::Working);}
@@ -138,4 +138,16 @@ pub fn maintain(s:&mut LocalState,now:u64)->bool {
     #[test]fn utc_dates(){assert_eq!(timestamp("1970-01-01T00:00:00Z"),Some(0));assert_eq!(timestamp("2000-03-01T00:00:00.123456Z"),Some(951868800123));assert_eq!(timestamp("2026-09-27T02:42:55Z"),Some(1790476975000));assert!(timestamp("2025-02-29T00:00:00Z").is_none());assert!(timestamp("x").is_none());}
     #[test]fn parser_ignores_unrecognized_and_missing_ids(){assert!(parse(&json!({"type":"event_msg","payload":{"type":"stream_error"}})).is_none());assert!(parse(&json!({"type":"event_msg","timestamp":"2026-09-27T00:00:00Z","payload":{"type":"task_complete"}})).is_none());}
     #[test]fn parser_discards_content(){let x=json!({"type":"event_msg","timestamp":"2026-09-27T00:00:00Z","payload":{"type":"task_complete","turn_id":"t","last_agent_message":"SECRET"}});let ev=parse(&x).unwrap();assert!(!format!("{ev:?}").contains("SECRET"));}
+    #[test]fn session_start_turn_is_not_a_duplicate_prompt(){let mut s=LocalState::default();hook(&mut s,&v("SessionStart","t"),0,true,"").unwrap();assert!(hook(&mut s,&v("UserPromptSubmit","t"),100,true,"").unwrap());assert_eq!(s.sessions["s"].state,LightState::Working);}
+    #[test]fn exited_waiting_owner_does_not_block_other_tasks(){let mut s=start();hook(&mut s,&v("Interrupt","t"),200,true,"").unwrap();let old=s.sessions["s"].clone();assert!(owner_exited(&mut s,&old,300));assert_eq!(s.sessions["s"].state,LightState::Off);}
+    #[test]fn eight_records_do_not_mean_eight_running_tasks(){
+        use light_core::model::Engine;
+        let mut s=start();let now=86_400_000;
+        for i in 0..7 {let id=format!("old-{i}");let mut event=v("UserPromptSubmit","t");event["session_id"]=json!(id);hook(&mut s,&event,100,true,"").unwrap();let old=s.sessions[&id].clone();assert!(reconcile(&mut s,&old,&e(Kind::Complete,200),now,true));}
+        maintain(&mut s,now);assert_eq!(s.sessions.len(),1);
+        let mut engine=Engine::default();engine.accept(s.snapshot("vm",now),now,300).unwrap();assert_eq!(engine.view(now,90).state,LightState::Working);
+        hook(&mut s,&v("Stop","t"),now+1,true,"").unwrap();engine.accept(s.snapshot("vm",now+1),now+1,300).unwrap();assert_eq!(engine.view(now+1,90).state,LightState::Done);
+    }
+    #[test]fn new_tool_after_soft_stop_can_continue(){let mut s=start();hook(&mut s,&v("Stop","t"),200,true,"").unwrap();assert!(hook(&mut s,&v("PreToolUse","t"),300,true,"").unwrap());assert_eq!(s.sessions["s"].state,LightState::Working);}
+    #[test]fn hard_completion_rejects_late_pretool(){let mut s=start();let old=s.sessions["s"].clone();reconcile(&mut s,&old,&e(Kind::Complete,200),200,true);assert!(!hook(&mut s,&v("PreToolUse","t"),300,true,"").unwrap());assert_eq!(s.sessions["s"].state,LightState::Done);}
 }

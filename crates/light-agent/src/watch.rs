@@ -13,6 +13,7 @@ const WINDOW:u64=4*1024*1024;
     #[serde(default)] owner:Option<Owner>,
     #[serde(default)] turn:String,
     #[serde(default)] retired:Vec<String>,
+    #[serde(default)] calls:BTreeSet<String>,
 }
 #[derive(Default,Serialize,Deserialize)]struct Book {
     #[serde(default)] roots:BTreeSet<PathBuf>,
@@ -39,10 +40,13 @@ pub fn record(v:&Value,now:u64,heuristic:bool,run:&str)->Result<()> {
     let sid=v.get("session_id").and_then(Value::as_str).unwrap_or("");
     let event=v.get("hook_event_name").and_then(Value::as_str).unwrap_or("");
     let turn=v.get("turn_id").and_then(Value::as_str).unwrap_or("");
+    let call=v.get("tool_use_id").and_then(Value::as_str).unwrap_or("");
     let parent=owner::capture();let home=root();
     store::update(|s|{
         let mut tracking=book().ok();
         if event=="UserPromptSubmit"&&!turn.is_empty()&&tracking.as_ref().and_then(|b|b.sessions.get(sid)).is_some_and(|b|b.retired.iter().any(|t|t==turn)){return Ok(false);}
+        if event=="PreToolUse"&&!call.is_empty()&&s.sessions.get(sid).is_some_and(|s|s.event=="Stop")
+            &&tracking.as_ref().and_then(|b|b.sessions.get(sid)).is_some_and(|b|b.calls.contains(call)){return Ok(false);}
         let changed=lifecycle::hook(s,v,now,heuristic,run)?;
         if (changed||event=="SessionStart")&&s.sessions.contains_key(sid)&&v.get("agent_id").and_then(Value::as_str).unwrap_or("").is_empty(){
             if let Some(b)=tracking.as_mut(){
@@ -51,10 +55,11 @@ pub fn record(v:&Value,now:u64,heuristic:bool,run:&str)->Result<()> {
                 let current=&s.sessions[sid];
                 let binding=b.sessions.entry(sid.into()).or_default();
                 if !binding.turn.is_empty()&&binding.turn!=current.turn{
-                    binding.retired.push(binding.turn.clone());
+                    binding.retired.push(binding.turn.clone());binding.calls.clear();
                     if binding.retired.len()>64{binding.retired.remove(0);}
                 }
                 binding.turn=current.turn.clone();
+                if event=="PreToolUse"&&!call.is_empty()&&binding.calls.len()<4096{binding.calls.insert(call.into());}
                 if path.is_some(){binding.path=path;}
                 if parent.is_some(){binding.owner=parent;}
                 // Bound private bookkeeping to the live registry plus one-hour
@@ -65,6 +70,26 @@ pub fn record(v:&Value,now:u64,heuristic:bool,run:&str)->Result<()> {
         }
         Ok(changed)
     })
+}
+fn notification(s:&mut light_core::hooks::LocalState,v:&Value,now:u64,heuristic:bool)->Result<bool> {
+    if v.get("type").and_then(Value::as_str)!=Some("agent-turn-complete"){return Ok(false);}
+    let turn=v.get("turn-id").and_then(Value::as_str).unwrap_or("");
+    let thread=v.get("thread-id").and_then(Value::as_str).unwrap_or("");
+    let ids:Vec<_>=s.sessions.values().filter(|s|!turn.is_empty()&&s.turn==turn&&(thread.is_empty()||s.id==thread)).map(|s|s.id.clone()).collect();
+    if ids.len()==1 && matches!(s.sessions[&ids[0]].event.as_str(),"NotifyComplete"|"JournalComplete"|"JournalAborted"|"Interrupt"|"OwnerExited") {
+        // A delayed/duplicate notification must not override an abort or a
+        // definitive completion; in particular, it must not replay a timer.
+        return Ok(false);
+    }
+    let mut changed=s.apply_notify(v,now,heuristic)?;
+    if ids.len()==1&&s.sessions.get(&ids[0]).is_some_and(|s|s.event=="Stop"){
+        s.revision=s.revision.saturating_add(1);let entry=s.sessions.get_mut(&ids[0]).unwrap();
+        entry.event="NotifyComplete".into();entry.version=s.revision;changed=true;
+    }
+    Ok(changed)
+}
+pub fn notify(v:&Value,now:u64,heuristic:bool)->Result<()> {
+    store::update(|s|notification(s,v,now,heuristic))
 }
 #[derive(Default)]struct Cursor {
     path:PathBuf, offset:u64, identity:(u64,u64), verified:bool, internal:bool,
@@ -160,7 +185,7 @@ impl Observer {
         let ids:BTreeSet<_>=local.sessions.keys().cloned().collect();
         self.watches.retain(|id,_|ids.contains(id));self.discovered.retain(|id,_|ids.contains(id));
         self.discover(&b.roots,&ids);
-        enum Action{Journal(LocalSession,Evidence),Internal(LocalSession),Exit(LocalSession)}
+        enum Action{Journal(LocalSession,Evidence),Internal(LocalSession),Exit(LocalSession,Owner)}
         let mut actions=Vec::new();let now=now_ms();
         for session in local.sessions.values(){
             if session.id=="manual-test"||session.event=="OwnerExited"{continue;}
@@ -187,12 +212,12 @@ impl Observer {
                     w.last_bind=Some(Instant::now());w.owner=owner::holding(&path);
                 }
             }
-            if !lifecycle::terminal(session){
+            if !matches!(session.state,light_core::model::LightState::Done|light_core::model::LightState::Off){
                 match w.owner.as_ref().map(owner::presence).unwrap_or(Presence::Unknown){
                     Presence::Gone=>{
                         if w.dead_version!=session.version{w.dead_since=None;w.dead_version=session.version;}
                         let since=w.dead_since.get_or_insert_with(Instant::now);
-                        if since.elapsed()>=Duration::from_secs(10){actions.push(Action::Exit(session.clone()));}
+                        if since.elapsed()>=Duration::from_secs(10){actions.push(Action::Exit(session.clone(),w.owner.clone().unwrap()));}
                     }
                     Presence::Alive=>{w.dead_since=None;if w.status=="unverified"{w.status="owner_alive";}}
                     Presence::Unknown=>w.dead_since=None,
@@ -201,11 +226,15 @@ impl Observer {
         }
         store::update(|s|{
             let mut changed=false;
+            let latest_tracking=book()?;
             for action in actions {
                 changed|=match action {
                     Action::Journal(old,e)=>lifecycle::reconcile(s,&old,&e,now,heuristic),
                     Action::Internal(old)=>lifecycle::remove_known(s,&old),
-                    Action::Exit(old)=>lifecycle::owner_exited(s,&old,now),
+                    Action::Exit(old,owner)=>{
+                        let reassigned=latest_tracking.sessions.get(&old.id).and_then(|b|b.owner.as_ref()).is_some_and(|current|current!=&owner);
+                        !reassigned&&owner::presence(&owner)==Presence::Gone&&lifecycle::owner_exited(s,&old,now)
+                    },
                 };
             }
             changed|=lifecycle::maintain(s,now);Ok(changed)
@@ -228,4 +257,24 @@ impl Observer {
     #[test]fn subagent_meta_identified(){let dir=tmp();let path=dir.join("x.jsonl");fs::write(&path,"{\"type\":\"session_meta\",\"payload\":{\"id\":\"s\",\"source\":{\"subagent\":\"thread_title\"}}}\n").unwrap();let mut c=Cursor::default();assert!(c.poll(&path,"s").unwrap());assert!(c.internal);fs::remove_dir_all(dir).unwrap();}
     #[test]fn outside_root_rejected(){let dir=tmp();let path=dir.join("x.jsonl");fs::write(&path,meta("s")).unwrap();let roots=BTreeSet::from([dir.clone()]);assert!(allowed(&path,&roots).is_none());fs::remove_dir_all(dir).unwrap();}
     #[test]fn truncation_resets_cursor(){let dir=tmp();let path=dir.join("x.jsonl");fs::write(&path,format!("{}{}",meta("s"),done())).unwrap();let mut c=Cursor::default();assert!(c.poll(&path,"s").unwrap());fs::write(&path,meta("s")).unwrap();assert!(c.poll(&path,"s").unwrap());assert!(c.last.is_none());fs::remove_dir_all(dir).unwrap();}
+    #[test]fn notification_latches_without_replay(){
+        use light_core::hooks::LocalState;
+        let mut s=LocalState::default();
+        let hook=serde_json::json!({"hook_event_name":"UserPromptSubmit","session_id":"s","turn_id":"t"});
+        lifecycle::hook(&mut s,&hook,100,true,"").unwrap();
+        let n=serde_json::json!({"type":"agent-turn-complete","thread-id":"s","turn-id":"t","last-assistant-message":"done"});
+        assert!(notification(&mut s,&n,200,true).unwrap());let revision=s.revision;
+        assert_eq!(s.sessions["s"].event,"NotifyComplete");
+        assert!(!notification(&mut s,&n,300,true).unwrap());assert_eq!(s.revision,revision);
+        assert_eq!(s.sessions["s"].changed_ms,200);
+    }
+    #[test]fn late_notification_cannot_undo_interruption(){
+        use light_core::hooks::LocalState;
+        let mut s=LocalState::default();
+        let hook=serde_json::json!({"hook_event_name":"Interrupt","session_id":"s","turn_id":"t"});
+        lifecycle::hook(&mut s,&hook,100,true,"").unwrap();
+        let n=serde_json::json!({"type":"agent-turn-complete","thread-id":"s","turn-id":"t"});
+        assert!(!notification(&mut s,&n,200,true).unwrap());
+        assert_eq!(s.sessions["s"].state,light_core::model::LightState::Waiting);
+    }
 }
