@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.3 — Reliable Codex turn completion
+
+- Add a user-level Codex `notify` completion fallback for `agent-turn-complete`, covering environments where `Stop` is not emitted (notably affected `codex exec` versions).
+- Accept completion only for a session/turn already registered by hooks, filtering unrelated background notifications such as Codex title generation.
+- Preserve existing user `notify` configuration instead of overwriting it; uninstall removes only the exact AI Light line it installed.
+- Keep `Stop` as the normal interactive completion path; duplicate Stop/notify delivery does not extend the five-minute green-light timer.
+- Add regression tests for completion correlation, duplicate delivery, question waiting, existing notify preservation and uninstall behavior.
+
 ## 0.3.2 — Initial public pre-release
 
 - Rust/Tauri Windows tray desktop and Rust Ubuntu Codex relay.

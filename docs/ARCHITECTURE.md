@@ -11,6 +11,8 @@
 
 Hook通过stdin接收Codex事件JSON，仅在内存检查原始内容，持久化事件名/来源/会话/回合/工具标识与状态；不持久化提示词、回答、命令正文、输出、cwd。hook失败也返回空对象并退出0，避免灯控阻断主任务。所有hook都需要用户按Codex信任机制确认。
 
+0.3.3 还可通过 Codex 用户级 `notify` 接收 `agent-turn-complete`，用于 Stop 没有被发出的兼容兜底。notify payload 同样只在内存读取；只有 thread/session 与 turn 对得上本地已经登记的回合才归约为 Stop，未知线程直接忽略。已有用户 notify 不由安装器覆盖。
+
 Relay每200ms检查本地revision变化，15秒心跳，使用`POST /v1/sync`发送最新完整Snapshot。不是逐条重播过时事件。Bearer token鉴权、请求体上限256KiB、最多32来源/每来源128会话；默认只允许本机/私有网络地址，配置白名单后限制具体来源。`GET /v1/status`同样要求鉴权。
 
 网络请求禁用系统代理和重定向，默认2秒连接/4秒总超时；失败保留最新本地状态重试。HTTP没有传输加密，只用于可信宿主机/虚拟机网络；跨不可信网络须在外面使用TLS或加密隧道，不能仅靠Bearer token。
@@ -31,7 +33,7 @@ Windows聚合状态优先级：error > waiting > working > done > off。完成�
 
 ## Codex覆盖限制
 
-安装8个事件：SessionStart、UserPromptSubmit、PreToolUse、PermissionRequest、PostToolUse、Stop、Interrupt、SessionEnd。具体字段由实际CLI版本决定。该包不要求模型调用灯控工具，不注入additionalContext，不改变审批结果，不以Stop block要求继续推理。
+安装8个事件：SessionStart、UserPromptSubmit、PreToolUse、PermissionRequest、PostToolUse、Stop、Interrupt、SessionEnd；另外在没有既有用户 notify 时安装 completion-only 的 `agent-turn-complete` 兜底。具体字段由实际CLI版本决定。该包不要求模型调用灯控工具，不注入additionalContext，不改变审批结果，不以Stop block要求继续推理。
 
 普通文字提问仅启发式；可以在Ubuntu client.json将question_heuristic设false后重启relay。审批通过的精确瞬间不一定有hook，本实现通常在PostToolUse解除等待。子代理带agent_id时过滤，但不同版本字段差异须验收。CLI仍留在终端时的某些模型/API错误未完整覆盖。可选`light-agent codex -- ...`只补充整个CLI进程退出码监测。
 

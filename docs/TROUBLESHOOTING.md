@@ -22,7 +22,22 @@
 
 ## 手动emit有效，但Codex不变灯
 
-确认安装agent的Linux用户与Codex一致，以及CODEX_HOME一致。Codex重启后在/hooks审阅并信任8项command hooks。检查`codex --version`；不支持相应事件的版本不能靠灯控修复。日志：
+确认安装agent的Linux用户与Codex一致，以及CODEX_HOME一致。Codex重启后在/hooks审阅并信任8项command hooks。检查`codex --version`；不支持相应事件的版本不能靠灯控修复。
+
+### 任务完成后仍一直黄灯呼吸
+
+先看本地状态：
+
+```bash
+~/.local/bin/light-agent status
+grep -n '^[[:space:]]*notify[[:space:]]*=' "${CODEX_HOME:-$HOME/.codex}/config.toml" || true
+```
+
+如果状态仍是 `working`，而你用的是 `codex exec`，这符合 OpenAI Codex 已报告的行为：部分版本只触发 UserPromptSubmit，不触发 Stop/PostToolUse（https://github.com/openai/codex/issues/18607）。升级 AI Light agent 到 0.3.3 后重新执行 `install --client ...`；没有其他 notify 时，config.toml 应出现指向 `light-agent notify` 的根级 notify。
+
+如果已有自己的 notify，安装器会保留它，因此不会自动获得 exec 完成兜底。不要直接覆盖原通知器；在现有 notifier 中把同一 JSON payload 再调用一次 `~/.local/bin/light-agent notify "$PAYLOAD"`。
+
+日志：
 
 ```bash
 journalctl --user -u ai-light-relay.service -n 80 --no-pager

@@ -7,7 +7,7 @@
 从同一个 Release 下载安装包与 SHA256SUMS。PowerShell 校验：
 
 ```powershell
-Get-FileHash .\AI-Light-0.3.2-windows-x64-setup.exe -Algorithm SHA256
+Get-FileHash .\AI-Light-0.3.3-windows-x64-setup.exe -Algorithm SHA256
 ```
 
 将结果与发行页校验清单比较。安装包未签名，核对来源，不关闭安全防护。系统需要 WebView2 Runtime；安装器配置为缺失时下载其官方引导程序，不是完全离线安装。若提示 VC Runtime DLL 缺失，使用微软官方 Visual C++ 2015–2022 x64 Redistributable，不要到 DLL 下载站拷贝文件。
@@ -49,7 +49,7 @@ New-NetFirewallRule -Name 'AILightFromUbuntu' -DisplayName 'AI Light from Ubuntu
 ```bash
 mkdir -p ~/ai-light-agent
 cd ~/ai-light-agent
-tar -xzf ~/Downloads/ai-light-agent-0.3.2-linux-x86_64.tar.gz
+tar -xzf ~/Downloads/ai-light-agent-0.3.3-linux-x86_64.tar.gz
 chmod 700 .
 # 将 Windows 导出的 client.json 放到当前目录
 chmod 600 client.json
@@ -64,6 +64,7 @@ chmod 600 client.json
 - `~/.config/ai-light/client.json`（配置与访问密钥）。
 - `~/.local/state/ai-light/state.json`（最小状态，不含对话正文）。
 - `$CODEX_HOME/hooks.json`，默认 `~/.codex/hooks.json`；先备份，再合并自己的 8 项 command hooks。
+- `$CODEX_HOME/config.toml`：仅当根级没有已有 `notify` 时，前置加入指向 `light-agent notify` 的用户级完成回调；已有通知器保持原样，不覆盖。
 - `~/.config/systemd/user/ai-light-relay.service`。
 
 不会修改模型、provider、代理、`AGENTS.md` 或权限批准逻辑。XDG 配置/状态目录变量适用于配置与状态。
@@ -93,6 +94,10 @@ systemctl --user enable --now ai-light-relay.service
 ## 4. 信任 Codex hooks
 
 重启 Codex，输入 `/hooks`，审阅并信任指向本机 `~/.local/bin/light-agent hook` 的规则。应有 8 个事件：SessionStart、UserPromptSubmit、PreToolUse、PermissionRequest、PostToolUse、Stop、Interrupt、SessionEnd。
+
+完成状态还有第二条本地路径：Codex 用户级 `notify` 会把 `agent-turn-complete` JSON 作为最后一个 argv 参数交给 `light-agent notify`。它不注入上下文、不需要模型调用，也不出现在 `/hooks`。AI Light 只接受已由 hooks 登记的同一 session/turn，因此陌生线程不会点亮绿灯。部分 `codex exec` 版本不触发 Stop/PostToolUse，而 notify 可补上完成状态；见 https://github.com/openai/codex/issues/18607 。
+
+若安装器提示“Existing Codex notify setting left unchanged”，说明你已经配置了别的 notify；AI Light 不会抢占它，此时交互式 Stop 仍有效，但 `codex exec` 的完成兜底不会自动启用。需要同时使用两个通知器时，应由现有通知脚本把收到的同一 JSON payload 再调用一次 `~/.local/bin/light-agent notify "$PAYLOAD"`。
 
 若 `/hooks` 不存在或事件不可用，先记录 `codex --version` 并核对官方文档，不假定任何版本都兼容。旧 Python 灯控规则若还指向已删除脚本，审阅后仅移除那些旧规则，不动其他项目 hooks。
 
@@ -131,7 +136,7 @@ systemctl --user enable --now ai-light-relay.service
 
 Windows 从托盘退出旧实例，再安装同一路径的新安装包。不要删除 `%LOCALAPPDATA%\AILight`，其中保存设备、设置和密钥。旧版已存在序列号会保留；自动扫描只用于没有选择目标的公开版新配置。
 
-Ubuntu 使用同一 Linux 用户运行新二进制的 `install --client ...`，会保留已有来源名并重启服务。只有 Windows UI/灯控变化且网络协议不变时，无须重装 hooks。
+Ubuntu 使用同一 Linux 用户运行新二进制的 `install --client ...`，会保留已有来源名并重启服务。**从 0.3.2 升级到 0.3.3 必须重新运行一次 install**，因为本版需要检查并安装新的 Codex notify 完成兜底；单独替换 Windows 程序不能修复“任务完成仍黄灯呼吸”。
 
 ## 8. 卸载
 
@@ -147,4 +152,4 @@ Ubuntu：
 ~/.local/bin/light-agent uninstall
 ```
 
-仅删除自己的服务、二进制和 hook 命令；保留本地配置与状态。开启的 lingering 是用户级系统设置，卸载不会擅自关闭，因为可能有其他用户服务依赖它。
+仅删除自己的服务、二进制和 hook 命令，并且只在 `config.toml` 顶部仍是安装器写入的那条 AI Light notify 时删除它；用户原有或后来修改的 notify 不碰。保留本地 AI Light 配置与状态。开启的 lingering 是用户级系统设置，卸载不会擅自关闭，因为可能有其他用户服务依赖它。

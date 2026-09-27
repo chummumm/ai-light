@@ -110,6 +110,37 @@ impl LocalState {
         self.revision=self.revision.saturating_add(1); s.version=self.revision;
         Ok(true)
     }
+
+    /// Completion fallback for Codex's user-level `notify` callback.
+    ///
+    /// This path never creates a session. A completion is accepted only when
+    /// hooks have already registered the same session/turn locally.
+    pub fn apply_notify(&mut self, input: &Value, now: u64, question_heuristic: bool) -> Result<bool> {
+        if text(input, "type") != "agent-turn-complete" { return Ok(false); }
+        let turn = identifier(text(input, "turn-id"));
+        if turn.is_empty() { return Ok(false); }
+        let thread = identifier(text(input, "thread-id"));
+        let id = if !thread.is_empty() {
+            let Some(session) = self.sessions.get(&thread) else { return Ok(false); };
+            if !session.turn.is_empty() && session.turn != turn { return Ok(false); }
+            thread
+        } else {
+            // Older notify payloads lacked thread-id. Use turn-id only if it
+            // identifies exactly one already-known session.
+            let mut matches = self.sessions.values().filter(|s| s.turn == turn).map(|s| s.id.clone());
+            let Some(first) = matches.next() else { return Ok(false); };
+            if matches.next().is_some() { return Ok(false); }
+            first
+        };
+        let last = input.get("last-assistant-message").and_then(Value::as_str).unwrap_or("");
+        let mut stop = serde_json::Map::new();
+        stop.insert("hook_event_name".into(), Value::String("Stop".into()));
+        stop.insert("session_id".into(), Value::String(id));
+        stop.insert("turn_id".into(), Value::String(turn));
+        stop.insert("last_assistant_message".into(), Value::String(last.to_owned()));
+        self.apply(&Value::Object(stop), now, question_heuristic, "")
+    }
+
     pub fn emit(&mut self, id: &str, state: LightState, now: u64) {
         self.revision=self.revision.saturating_add(1);
         let s=self.sessions.entry(id.to_owned()).or_insert_with(|| LocalSession::new(id.to_owned(),"manual".into(),now));
@@ -185,6 +216,13 @@ mod tests {
     #[test] fn duplicate_stop_keeps_timestamp() {let mut s=LocalState::default();s.apply(&event("Stop"),1,true,"").unwrap();s.apply(&event("Stop"),10000,true,"").unwrap();assert_eq!(s.sessions["s"].changed_ms,1);}
     #[test] fn interrupt_not_error() {let mut s=LocalState::default();s.apply(&event("Interrupt"),0,true,"").unwrap();assert_eq!(state(&s),LightState::Waiting);}
     #[test] fn normal_exit_preserves_done_timer() {let mut s=LocalState::default();s.apply(&event("Stop"),1,true,"").unwrap();s.apply(&event("SessionEnd"),5,true,"").unwrap();assert_eq!(s.sessions["s"].changed_ms,1);}
+    fn notify(turn:&str)->Value {json!({"type":"agent-turn-complete","thread-id":"s","turn-id":turn,"last-assistant-message":"done"})}
+    #[test] fn notify_completes_registered_turn() {let mut s=LocalState::default();s.apply(&event("UserPromptSubmit"),1,true,"").unwrap();assert!(s.apply_notify(&notify("t"),2,true).unwrap());assert_eq!(state(&s),LightState::Done);}
+    #[test] fn notify_unknown_thread_is_ignored() {let mut s=LocalState::default();s.apply(&event("UserPromptSubmit"),1,true,"").unwrap();let mut n=notify("t");n["thread-id"]=json!("background-title");assert!(!s.apply_notify(&n,2,true).unwrap());assert_eq!(state(&s),LightState::Working);}
+    #[test] fn notify_wrong_turn_is_ignored() {let mut s=LocalState::default();s.apply(&event("UserPromptSubmit"),1,true,"").unwrap();assert!(!s.apply_notify(&notify("other"),2,true).unwrap());assert_eq!(state(&s),LightState::Working);}
+    #[test] fn legacy_notify_without_thread_matches_unique_turn() {let mut s=LocalState::default();s.apply(&event("UserPromptSubmit"),1,true,"").unwrap();let mut n=notify("t");n.as_object_mut().unwrap().remove("thread-id");assert!(s.apply_notify(&n,2,true).unwrap());assert_eq!(state(&s),LightState::Done);}
+    #[test] fn notify_question_waits() {let mut s=LocalState::default();s.apply(&event("UserPromptSubmit"),1,true,"").unwrap();let mut n=notify("t");n["last-assistant-message"]=json!("请确认是否继续？");s.apply_notify(&n,2,true).unwrap();assert_eq!(state(&s),LightState::Waiting);}
+    #[test] fn duplicate_notify_does_not_extend_done_timer() {let mut s=LocalState::default();s.apply(&event("UserPromptSubmit"),1,true,"").unwrap();s.apply_notify(&notify("t"),2,true).unwrap();s.apply_notify(&notify("t"),9000,true).unwrap();assert_eq!(s.sessions["s"].changed_ms,2);}
     #[test] fn secrets_not_serialized() {let mut s=LocalState::default();let mut e=event("UserPromptSubmit");e["prompt"]=json!("SECRET_PASSWORD");e["cwd"]=json!("/private/path");s.apply(&e,0,true,"").unwrap();let text=serde_json::to_string(&s).unwrap();assert!(!text.contains("SECRET_PASSWORD"));assert!(!text.contains("/private/path"));}
     #[test] fn explicit_failure_only() {assert!(!explicit_tool_failure(&json!("there is an error handler in this file")));assert!(explicit_tool_failure(&json!("Process exited with code 2")));assert!(!explicit_tool_failure(&json!({"exit_code":0})));}
 }

@@ -19,7 +19,7 @@ Rust + Tauri 2 的 Windows 桌面灯控，配套全 Rust Ubuntu Codex 状态转�
 
 ```text
 Ubuntu VM                                  Windows 实体机
-Codex → Rust hook → 本地状态 → Rust relay ──HTTP──→ AI Light
+Codex → Rust hook / notify → 本地状态 → Rust relay ──HTTP──→ AI Light
                                                    ├─ 图形界面 / 系统托盘
                                                    ├─ 状态聚合 / 倒计时 / 声音调度
                                                    └─ BLE HID → 实体灯
@@ -71,7 +71,7 @@ Codex → Rust hook → 本地状态 → Rust relay ──HTTP──→ AI Light
 systemctl --user status ai-light-relay.service --no-pager
 ```
 
-必须使用运行 Codex 的同一个 Linux 用户。重启 Codex，打开 **`/hooks`**，审阅并信任安装的 8 个 command hooks。是否支持这些事件取决于你的 Codex 版本；不能把配置写入成功当成 hook 已生效。
+必须使用运行 Codex 的同一个 Linux 用户。安装器会合并 8 个 command hooks；若用户级 `$CODEX_HOME/config.toml` 没有已有 `notify`，还会加入 AI Light 的 `agent-turn-complete` 完成兜底。已有 `notify` 永远不覆盖。重启 Codex，打开 **`/hooks`**，审阅并信任 8 个 hooks；`notify` 是 Codex 自己的用户级完成回调，不出现在 `/hooks` 信任列表中。
 
 测试时逐条运行、观察实体灯：
 
@@ -100,7 +100,9 @@ bash scripts/build-all-ubuntu.sh --install-deps
 
 ## 状态识别边界
 
-`Stop` 表示回合结束，不保证任务结果正确。普通文字提问是本地启发式，可能误判；审批等待可能到工具返回时才解除。CLI 没有退出的部分 API/网络错误没有完整通用 hook 覆盖。可用 `light-agent codex -- ...` 额外监控整个 CLI 进程异常退出。
+交互式 Codex 正常以 `Stop` 表示回合结束；AI Light 0.3.3 另外使用 Codex 用户级 `notify` 的 `agent-turn-complete` 作为完成兜底，因为部分 `codex exec` 版本只触发 `UserPromptSubmit` 而不触发 `Stop/PostToolUse`。兜底只接受已经由 hook 登记过的同一 session/turn，不会凭一个陌生通知创建“完成”状态。上游参考：https://github.com/openai/codex/issues/18607
+
+`Stop` / `agent-turn-complete` 都只表示回合结束，不保证任务结果正确。普通文字提问是本地启发式，可能误判；审批等待可能到工具返回时才解除。CLI 没有退出的部分 API/网络错误没有完整通用 hook 覆盖。可用 `light-agent codex -- ...` 额外监控整个 CLI 进程异常退出。
 
 灯控 hook 不调用模型、不添加上下文、不替用户批准，也不阻止 Stop 要求继续推理，所以不会自行增加模型 token 请求。存在一次本地 Rust 进程和状态文件操作的开销。完整限制见 [架构与安全边界](docs/ARCHITECTURE.md)。
 
