@@ -44,7 +44,7 @@ jobs:
           cargo test -p light-core -p light-agent --locked 2>&1 | tee countdown-rust-tests.log
           node --test tests/*.test.mjs | tee countdown-ui-tests.log
           node scripts/check-ui.mjs
-      - name: Commit tested files to the repair branch only
+      - name: Commit tested source to the repair branch only
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -54,7 +54,8 @@ jobs:
           gh auth setup-git
           git add Cargo.toml Cargo.lock src-tauri/tauri.conf.json ui/index.html CHANGELOG.md
           git add crates/light-core/src/model.rs src-tauri/src/main.rs src-tauri/src/server.rs
-          git add scripts/release.sh .github/workflows/build.yml docs/releases/v0.3.6.md tests/countdown-wiring.test.mjs
+          git add scripts/release.sh docs/releases/v0.3.6.md tests/countdown-wiring.test.mjs
+          # Workflow edits are applied separately by the authorized maintainer connection.
           git commit -m 'fix: retain completed countdowns across source outages and apply duration edits'
           git push origin HEAD:refs/heads/fix/completion-countdown-036
           git rev-parse HEAD > tested-commit.txt
