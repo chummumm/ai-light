@@ -1,3 +1,4 @@
+import { renderSources, caption as sessionCaption } from './sessions-ui.js';
 import { mountSoundUI, renderSoundUI } from './sound-ui.js';
 import { stateInfo, remaining, clock, batteryPresentation, powerPresentation, soundPresentation } from './view-model.js';
 const $ = id => document.getElementById(id);
@@ -48,16 +49,7 @@ function events(container, entries) {
     } container.append(row);
   }
 }
-function sources(v) {
-  const node = $('sources-list'); node.replaceChildren();
-  for (const source of v.aggregate.sources) {
-    const row = document.createElement('div'); row.className = 'detail-row';
-    const left = document.createElement('span'); left.textContent = source.id;
-    const right = document.createElement('span'); right.textContent = `${source.online ? '在线' : '失联'} · ${source.sessions} 个会话 · ${clock(source.last_seen_ms)}`;
-    row.append(left, right); node.append(row);
-  }
-  if (!node.children.length) { const empty = document.createElement('div'); empty.className = 'empty'; empty.textContent = '尚无来源；转发器默认每 15 秒发送一次心跳。'; node.append(empty); }
-}
+function sources(v) { renderSources(v, $('sources-list')); }
 function render(v) {
   view = v; if (!initialized) { initFields(v); initialized = true; }
   theme(v.config.theme); document.body.classList.toggle('reduced-motion', v.config.reduce_motion);
@@ -89,7 +81,8 @@ function render(v) {
   $('battery-fill').style.width = `${b.percent ?? 0}%`; $('battery-fill').classList.toggle('stale', b.old); $('battery-fill').classList.toggle('low', b.low);
   text('device-percent', b.number); text('device-percent-unit', b.valid ? (b.old ? '% · 上次' : '%') : '');
   text('device-low-status', audio.low ? (b.old ? '上次低电量' : '低电量保护') : b.valid && !b.old ? '有效电量读数' : '等待有效电量');
-  $('device-low-status').classList.toggle('low', audio.low); text('battery-sound-status', audio.guard);
+  $('device-low-status').classList.toggle('low', audio.low);
+  text('battery-sound-status', audio.guard);
   text('battery-updated', v.battery.updated_ms ? `${clock(v.battery.updated_ms)}${b.old ? ' · 已过期' : ''}` : '尚未读取');
   text('battery-note', b.note); text('battery-error', v.battery.error || '');
   $('battery-warning').hidden = !audio.low;
@@ -98,7 +91,7 @@ function render(v) {
   renderSoundUI(v);
   const online = v.aggregate.sources.filter(s => s.online).length;
   text('source-summary', online ? `${online} 个来源在线` : '等待接入');
-  text('source-caption', v.aggregate.sources.length ? `${v.aggregate.sessions.length} 个会话 · 15 秒心跳` : '没有收到状态心跳');
+  text('source-caption', v.aggregate.sources.length ? sessionCaption(v.aggregate.sessions) : '没有收到状态心跳');
   text('receiver-address', v.receiver.address); text('receiver-status', v.receiver.listening ? '正在监听' : '未启动');
   text('receiver-error', v.receiver.error || '');
   $('sidebar-dot').classList.toggle('online', v.receiver.listening); text('sidebar-label', v.receiver.listening ? '后台正在运行' : '接收端未就绪');
