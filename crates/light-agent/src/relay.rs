@@ -1,11 +1,11 @@
-use crate::store;
+use crate::{store,watch::Observer};
 use anyhow::{Context, Result};
 use light_core::now_ms;
 use std::time::{Duration,Instant};
 
 fn client()->Result<reqwest::blocking::Client>{
     Ok(reqwest::blocking::Client::builder()
-        .no_proxy() // VM traffic must not leak through unrelated HTTP proxies.
+        .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(2)).timeout(Duration::from_secs(4))
         .build()?)
@@ -20,11 +20,23 @@ pub fn run()->Result<()> {
     let _lock=store::relay_lock().context("another light-agent relay is running")?;
     store::initialize_state()?;
     let cfg=store::load_config()?;
+    let heuristic=cfg.question_heuristic;
+    // Filesystem reconciliation is independent of network retries/heartbeats.
+    std::thread::spawn(move||{
+        let mut observer=Observer::default();let mut failed=false;
+        loop {
+            match observer.tick(heuristic){
+                Ok(())=>failed=false,
+                Err(_)=>{if !failed{store::log_issue("lifecycle reconciliation unavailable; preserving existing task states");}failed=true;}
+            }
+            std::thread::sleep(Duration::from_secs(2));
+        }
+    });
     let http=client()?;
     let mut last_sent:Option<(String,u64)>=None;
     let mut last_heartbeat=Instant::now()-Duration::from_secs(15);
     let mut last_failed=false;
-    println!("AI Light relay started (state only; no prompt or model traffic).");
+    println!("AI Light relay started (state only; evidence-based lifecycle reconciliation enabled).");
     loop {
         let local=store::read_state()?;
         let current=(local.generation.clone(),local.revision);
