@@ -1,0 +1,57 @@
+name: Prepare legacy session repair
+on:
+  push:
+    branches: [fix/unverified-legacy-records]
+    paths:
+      - scripts/prepare-unverified-fix.mjs
+      - .github/workflows/prepare-unverified-fix.yml
+permissions:
+  contents: read
+jobs:
+  prepare-repair:
+    if: github.repository == 'chummumm/ai-light' && github.ref == 'refs/heads/fix/unverified-legacy-records'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f
+        with:
+          node-version: '22'
+      - run: rustup toolchain install 1.98.1 --profile minimal
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-rust-1.98.1-${{ hashFiles('Cargo.lock') }}
+      - name: Prepare and test exact source patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/prepare-unverified-fix.mjs
+          git diff --check
+          cargo test -p light-core -p light-agent --locked 2>&1 | tee rust-tests.log
+          node --test tests/*.test.mjs | tee ui-tests.log
+          node scripts/check-ui.mjs
+      - name: Commit tested source to this branch only
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Cargo.toml Cargo.lock crates ui tests docs CHANGELOG.md src-tauri/tauri.conf.json
+          git commit -m 'fix: separate unverified legacy records from active tasks'
+          git push origin HEAD:refs/heads/fix/unverified-legacy-records
+          git archive --format=tar.gz --output=prepared-source.tar.gz HEAD
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: prepared-session-repair
+          path: |
+            prepared-source.tar.gz
+            rust-tests.log
+            ui-tests.log
+          retention-days: 7
