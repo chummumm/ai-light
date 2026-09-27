@@ -59,16 +59,16 @@ grep -Fq "AI-Light-$RELEASE_VERSION-windows-x64-setup.exe" "$tmp/SHA256SUMS"
 grep -Fq "ai-light-agent-$RELEASE_VERSION-linux-x86_64.tar.gz" "$tmp/SHA256SUMS"
 grep -Fq "ai-light-$RELEASE_VERSION-source.tar.gz" "$tmp/SHA256SUMS"
 
-cat > "$tmp/notes.md" <<EOF
-# AI Light $RELEASE_VERSION
+cat > "$tmp/notes.md" <<'EOF'
+# AI Light @@VERSION@@
 
 Stable release of the Rust/Tauri Windows status-light controller and Rust Ubuntu Codex relay.
 
 ## Downloads
 
-- Windows x64: `AI-Light-$RELEASE_VERSION-windows-x64-setup.exe`
-- Ubuntu 24.04 x86_64 agent: `ai-light-agent-$RELEASE_VERSION-linux-x86_64.tar.gz`
-- Source archive: `ai-light-$RELEASE_VERSION-source.tar.gz`
+- Windows x64: `AI-Light-@@VERSION@@-windows-x64-setup.exe`
+- Ubuntu 24.04 x86_64 agent: `ai-light-agent-@@VERSION@@-linux-x86_64.tar.gz`
+- Source archive: `ai-light-@@VERSION@@-source.tar.gz`
 - Integrity: verify files with `SHA256SUMS`
 
 ## Highlights
@@ -83,27 +83,32 @@ Stable release of the Rust/Tauri Windows status-light controller and Rust Ubuntu
 
 ## Verification
 
-Source commit: `$source_sha`
+Source commit: `@@SOURCE_SHA@@`
 
-GitHub Actions run: https://github.com/$GITHUB_REPOSITORY/actions/runs/$run_id
+GitHub Actions run: https://github.com/@@REPOSITORY@@/actions/runs/@@RUN_ID@@
 
 The release pipeline completed Linux tests, native Windows tests, Ubuntu packaging, and the Windows NSIS installer build before publishing these assets.
 
 **Unsigned stable release.** The Windows installer is not commercially code-signed. CI does not replace physical BLE/hardware validation. No vendor executable or firmware is included. Verify `SHA256SUMS` and keep normal Windows security protections enabled.
 EOF
 
-if [[ "$(jq -r '.isPrerelease' "$meta")" == "true" ]]; then
-  gh release edit "$tag" --prerelease=false --latest --notes-file "$tmp/notes.md"
-else
-  gh release edit "$tag" --latest --notes-file "$tmp/notes.md"
-fi
+sed -i   -e "s|@@VERSION@@|$RELEASE_VERSION|g"   -e "s|@@SOURCE_SHA@@|$source_sha|g"   -e "s|@@REPOSITORY@@|$GITHUB_REPOSITORY|g"   -e "s|@@RUN_ID@@|$run_id|g"   "$tmp/notes.md"
+
+gh release edit "$tag" --prerelease=false --latest --notes-file "$tmp/notes.md"
 
 after="$tmp/after.json"
-gh release view "$tag" --json isDraft,isPrerelease,isLatest,url,targetCommitish > "$after"
-[[ "$(jq -r '.isDraft' "$after")" == "false" ]]
-[[ "$(jq -r '.isPrerelease' "$after")" == "false" ]]
-[[ "$(jq -r '.isLatest' "$after")" == "true" ]]
-[[ "$(jq -r '.targetCommitish' "$after")" == "$source_sha" ]]
+gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > "$after"
+[[ "$(jq -r '.draft' "$after")" == "false" ]]
+[[ "$(jq -r '.prerelease' "$after")" == "false" ]]
+[[ "$(jq -r '.target_commitish' "$after")" == "$source_sha" ]]
+[[ "$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name')" == "$tag" ]]
 
-echo "Promoted $tag to stable latest release without replacing build assets."
-jq -r '.url' "$after"
+body="$(jq -r '.body' "$after")"
+grep -Fq "`AI-Light-$RELEASE_VERSION-windows-x64-setup.exe`" <<<"$body"
+grep -Fq "`ai-light-agent-$RELEASE_VERSION-linux-x86_64.tar.gz`" <<<"$body"
+grep -Fq "`$source_sha`" <<<"$body"
+grep -Fq "`thread_title`" <<<"$body"
+grep -Fq "`SHA256SUMS`" <<<"$body"
+
+echo "Verified $tag as stable latest release without replacing build assets."
+jq -r '.html_url' "$after"
