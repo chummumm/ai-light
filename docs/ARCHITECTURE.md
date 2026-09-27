@@ -11,7 +11,7 @@
 
 Hook通过stdin接收Codex事件JSON，仅在内存检查原始内容，持久化事件名/来源/会话/回合/工具标识与状态；不持久化提示词、回答、命令正文、输出、cwd。hook失败也返回空对象并退出0，避免灯控阻断主任务。所有hook都需要用户按Codex信任机制确认。
 
-0.3.3 还可通过 Codex 用户级 `notify` 接收 `agent-turn-complete`，用于 Stop 没有被发出的兼容兜底。notify payload 同样只在内存读取；只有 thread/session 与 turn 对得上本地已经登记的回合才归约为 Stop，未知线程直接忽略。已有用户 notify 不由安装器覆盖。
+0.3.3 还可通过 Codex 用户级 `notify` 接收 `agent-turn-complete`，用于 Stop 没有被发出的兼容兜底。notify payload 同样只在内存读取；只有 thread/session 与 turn 对得上本地已经登记的回合才归约为 Stop，未知线程直接忽略。当前 Codex TUI 的隐藏 `thread_title` 临时线程使用一段固定且可从上游源码核对的内部指令；只对这段完整特征做内存过滤/清理，防止它的 Working 状态盖过主任务 Done。已有用户 notify 不由安装器覆盖。
 
 Relay每200ms检查本地revision变化，15秒心跳，使用`POST /v1/sync`发送最新完整Snapshot。不是逐条重播过时事件。Bearer token鉴权、请求体上限256KiB、最多32来源/每来源128会话；默认只允许本机/私有网络地址，配置白名单后限制具体来源。`GET /v1/status`同样要求鉴权。
 
