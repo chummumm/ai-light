@@ -15,6 +15,8 @@ pub struct LocalSession {
     pub id: String, pub turn: String, pub version: u64, pub state: LightState,
     pub event: String, pub changed_ms: u64, pub touched_ms: u64,
     #[serde(default)] pub run_id: String,
+    // Projection only: retain the original event, turn, state and timestamps.
+    #[serde(default)] pub unverified_legacy: bool,
     #[serde(default)] pending_ids: BTreeSet<String>,
     #[serde(default)] pending_names: BTreeSet<String>,
     #[serde(default)] error_latched: bool,
@@ -23,7 +25,7 @@ impl LocalSession {
     fn new(id: String, turn: String, now: u64) -> Self {
         Self { id, turn, version:0, state:LightState::Off, event:"SessionStart".into(),
             changed_ms:now, touched_ms:now, run_id:String::new(), pending_ids:BTreeSet::new(),
-            pending_names:BTreeSet::new(), error_latched:false }
+            pending_names:BTreeSet::new(), error_latched:false, unverified_legacy:false }
     }
     fn waiting(&self) -> bool { !self.pending_ids.is_empty() || !self.pending_names.is_empty() }
 }
@@ -110,6 +112,7 @@ impl LocalState {
             _ => {}
         }
         if new_state != old_state || event == "UserPromptSubmit" { s.changed_ms=now; }
+        s.unverified_legacy=false;
         s.state=new_state; s.event=event.to_owned(); s.touched_ms=now;
         self.revision=self.revision.saturating_add(1); s.version=self.revision;
         Ok(true)
@@ -163,6 +166,7 @@ impl LocalState {
     pub fn emit(&mut self, id: &str, state: LightState, now: u64) {
         self.revision=self.revision.saturating_add(1);
         let s=self.sessions.entry(id.to_owned()).or_insert_with(|| LocalSession::new(id.to_owned(),"manual".into(),now));
+        s.unverified_legacy=false;
         s.state=state; s.event="Manual".into(); s.changed_ms=now; s.touched_ms=now; s.version=self.revision;
         s.error_latched=false; s.pending_ids.clear(); s.pending_names.clear();
     }
@@ -175,7 +179,9 @@ impl LocalState {
     pub fn snapshot(&self, source: &str, now: u64) -> Snapshot {
         Snapshot { schema:1, source_id:source.to_owned(), generation:self.generation.clone(), revision:self.revision,
             sessions:self.sessions.values().map(|s|WireSession{id:s.id.clone(),turn:s.turn.clone(),version:s.version,
-                state:s.state,age_ms:now.saturating_sub(s.changed_ms),event:s.event.clone()}).collect() }
+                state:if s.unverified_legacy {LightState::Off}else{s.state},
+                age_ms:now.saturating_sub(s.changed_ms),
+                event:if s.unverified_legacy {format!("UnverifiedLegacy:{}",s.event)}else{s.event.clone()}}).collect() }
     }
 }
 fn text<'a>(v: &'a Value, key: &str) -> &'a str { v.get(key).and_then(Value::as_str).unwrap_or("") }

@@ -1,6 +1,6 @@
 //! Read-only reconciliation of already-known sessions. No prompts are copied or
 //! uploaded. The rollout adapter is deliberately strict and is not a stable API.
-use crate::{lifecycle::{self,Evidence}, owner::{self,Owner,Presence}, store};
+use crate::{legacy,lifecycle::{self,Evidence}, owner::{self,Owner,Presence}, store};
 use anyhow::{Context,Result};
 use light_core::{fsutil::atomic_json, hooks::LocalSession, now_ms};
 use serde::{Deserialize,Serialize};
@@ -104,7 +104,9 @@ fn header(file:&File,sid:&str)->Result<bool>{
     let v:Value=serde_json::from_slice(&line).context("unsupported rollout header")?;
     anyhow::ensure!(v.get("type").and_then(Value::as_str)==Some("session_meta")&&v.pointer("/payload/id").and_then(Value::as_str)==Some(sid),"rollout identity mismatch");
     let source=v.pointer("/payload/source");
-    Ok(source.is_some_and(|v|v.get("subagent").is_some()||v.as_str()==Some("subagent")))
+    // Only the explicitly named title generator is synthetic. A thread_spawn
+    // subagent (or an unknown source) must never be silently removed.
+    Ok(source.and_then(|v|v.get("subagent")).and_then(Value::as_str)==Some("thread_title"))
 }
 impl Cursor {
     fn poll(&mut self,path:&Path,sid:&str)->Result<bool>{
@@ -148,44 +150,62 @@ impl Cursor {
 #[derive(Default)]pub struct Observer {
     watches:BTreeMap<String,Watch>, discovered:BTreeMap<String,PathBuf>,
     search:Vec<PathBuf>, last_search:Option<Instant>, last_report:Option<Instant>,
+    search_failed:bool, search_roots:BTreeSet<PathBuf>, search_ids:BTreeSet<String>,
+    legacy_initialized:bool, legacy_candidates:BTreeMap<String,(u64,String)>,
 }
 impl Observer {
     /// Filename-only discovery, restricted to IDs already in AI Light. Existing
     /// running tasks can be adopted without writing or restarting Codex.
-    fn discover(&mut self,roots:&BTreeSet<PathBuf>,ids:&BTreeSet<String>){
+    fn discover(&mut self,roots:&BTreeSet<PathBuf>,ids:&BTreeSet<String>)->bool{
         let now=Instant::now();
+        if self.search_roots!=*roots || self.search_ids!=*ids {
+            self.search.clear();self.last_search=None;self.search_roots=roots.clone();self.search_ids=ids.clone();
+        }
         if self.search.is_empty()&&self.last_search.is_none_or(|t|now.duration_since(t)>=Duration::from_secs(60)){
+            self.search_failed=roots.is_empty();
             for r in roots{self.search.push(r.join("sessions"));self.search.push(r.join("archived_sessions"));}
             self.last_search=Some(now);
         }
-        // Date folders are shallow; bounded directory count keeps polling cheap.
         let mut count=0;
         while count<64 {
             let Some(dir)=self.search.pop()else{break;};count+=1;
-            let Ok(entries)=fs::read_dir(&dir)else{continue;};
-            for e in entries.flatten(){
-                let Ok(t)=e.file_type()else{continue;};
-                if t.is_symlink(){continue;}
+            let entries=match fs::read_dir(&dir){
+                Ok(e)=>e,
+                Err(e) if e.kind()==std::io::ErrorKind::NotFound && roots.iter().any(|r|dir==r.join("archived_sessions"))=>continue,
+                Err(_)=>{self.search_failed=true;continue;}
+            };
+            for entry in entries{
+                let e=match entry{Ok(e)=>e,Err(_)=>{self.search_failed=true;continue;}};
+                let t=match e.file_type(){Ok(t)=>t,Err(_)=>{self.search_failed=true;continue;}};
+                if t.is_symlink(){self.search_failed=true;continue;}
                 if t.is_dir(){
                     if roots.iter().any(|r|e.path().strip_prefix(r).ok().is_some_and(|p|p.components().count()<=5)){self.search.push(e.path());}
+                    else{self.search_failed=true;}
                 }else if t.is_file(){
                     let name=e.file_name();let name=name.to_string_lossy();
                     if !name.ends_with(".jsonl"){continue;}
                     for sid in ids {
                         if name.ends_with(&format!("-{sid}.jsonl")) {
                             if let Some(path)=allowed(&e.path(),roots){self.discovered.insert(sid.clone(),path);}
+                            else{self.search_failed=true;}
                         }
                     }
                 }
             }
         }
+        self.search.is_empty()&&!self.search_failed&&!roots.is_empty()
     }
     pub fn tick(&mut self,heuristic:bool)->Result<()> {
         let local=store::read_state()?;let mut b=book()?;if let Some(root)=root(){b.roots.insert(root);}
         let ids:BTreeSet<_>=local.sessions.keys().cloned().collect();
         self.watches.retain(|id,_|ids.contains(id));self.discovered.retain(|id,_|ids.contains(id));
-        self.discover(&b.roots,&ids);
-        enum Action{Journal(LocalSession,Evidence),Internal(LocalSession),Exit(LocalSession,Owner)}
+        if !self.legacy_initialized {
+            self.legacy_initialized=true;
+            self.legacy_candidates=local.sessions.values().filter(|s|legacy::candidate(s,b.sessions.contains_key(&s.id)))
+                .map(|s|(s.id.clone(),(s.version,s.turn.clone()))).collect();
+        }
+        let discovery_complete=self.discover(&b.roots,&ids);
+        enum Action{Journal(LocalSession,Evidence),Internal(LocalSession),Exit(LocalSession,Owner),Unverified(LocalSession)}
         let mut actions=Vec::new();let now=now_ms();
         for session in local.sessions.values(){
             if session.id=="manual-test"||session.event=="OwnerExited"{continue;}
@@ -195,11 +215,13 @@ impl Observer {
                 if w.owner.as_ref()!=Some(&owner){w.owner=Some(owner);w.dead_since=None;}
             }
             let path=binding.and_then(|b|b.path.as_ref()).or_else(||self.discovered.get(&session.id)).and_then(|p|allowed(p,&b.roots));
-            w.status="unverified";
+            w.status=if discovery_complete{"journal_missing"}else{"discovery_incomplete"};
+            let has_path=path.is_some();
             if let Some(path)=path {
                 match w.cursor.poll(&path,&session.id){
                     Ok(true) if w.cursor.internal=>{actions.push(Action::Internal(session.clone()));w.status="internal";continue;}
                     Ok(true)=>{
+                        w.status="journal_no_lifecycle";
                         if let Some(ev)=w.cursor.last.as_ref(){
                             w.status=if ev.turn!=session.turn{"different_turn"}else if ev.kind==lifecycle::Kind::Started{"journal_open"}else{"journal_terminal"};
                             actions.push(Action::Journal(session.clone(),ev.clone()));
@@ -219,17 +241,30 @@ impl Observer {
                         let since=w.dead_since.get_or_insert_with(Instant::now);
                         if since.elapsed()>=Duration::from_secs(10){actions.push(Action::Exit(session.clone(),w.owner.clone().unwrap()));}
                     }
-                    Presence::Alive=>{w.dead_since=None;if w.status=="unverified"{w.status="owner_alive";}}
+                    Presence::Alive=>{w.dead_since=None;if !has_path{w.status="owner_alive";}}
                     Presence::Unknown=>w.dead_since=None,
                 }
             }
+            let initial=self.legacy_candidates.get(&session.id).is_some_and(|(v,t)|*v==session.version&&t==&session.turn);
+            if !session.unverified_legacy && initial && discovery_complete && !has_path && w.owner.is_none() && binding.is_none() {
+                actions.push(Action::Unverified(session.clone()));
+            }
+            if session.unverified_legacy{w.status="legacy_unverified";}
         }
         store::update(|s|{
             let mut changed=false;
             let latest_tracking=book()?;
             for action in actions {
                 changed|=match action {
-                    Action::Journal(old,e)=>lifecycle::reconcile(s,&old,&e,now,heuristic),
+                    Action::Journal(old,e)=>{
+                        let changed=lifecycle::reconcile(s,&old,&e,now,heuristic);
+                        changed || (old.unverified_legacy&&e.at<=now.saturating_add(5000)&&e.turn==old.turn&&legacy::set(s,&old,false))
+                    },
+                    Action::Unverified(old)=>{
+                        // Recheck metadata under the state lock: a live hook may
+                        // have supplied a binding during the directory scan.
+                        !latest_tracking.sessions.contains_key(&old.id)&&legacy::set(s,&old,true)
+                    },
                     Action::Internal(old)=>lifecycle::remove_known(s,&old),
                     Action::Exit(old,owner)=>{
                         let reassigned=latest_tracking.sessions.get(&old.id).and_then(|b|b.owner.as_ref()).is_some_and(|current|current!=&owner);
@@ -241,7 +276,15 @@ impl Observer {
         })?;
         if self.last_report.is_none_or(|t|t.elapsed()>=Duration::from_secs(10)){
             self.last_report=Some(Instant::now());
-            let rows:Vec<_>=self.watches.iter().map(|(id,w)|serde_json::json!({"session_id":id,"evidence":w.status})).collect();
+            let observed=store::read_state()?;
+            let rows:Vec<_>=self.watches.iter().filter_map(|(id,w)|observed.sessions.get(id).map(|s|{
+                let unknown=s.unverified_legacy;
+                serde_json::json!({"session_id":id,"evidence":if unknown{"legacy_unverified"}else{w.status},
+                    "reason":if unknown{Some("pre_observer_start_without_tracking_or_journal")}else{None},
+                    "included_in_output":!unknown,"recorded_state":s.state,"recorded_event":s.event,
+                    "discovery_complete":discovery_complete,"tracking_present":b.sessions.contains_key(id),
+                    "owner_pid":w.owner.as_ref().map(|o|o.pid),"journal_turn_id":w.cursor.last.as_ref().map(|e|&e.turn)})
+            })).collect();
             atomic_json(&store::state_dir()?.join("lifecycle-status.json"),&serde_json::json!({"updated_ms":now,"sessions":rows}))?;
         }
         Ok(())
@@ -277,4 +320,17 @@ impl Observer {
         assert!(!notification(&mut s,&n,200,true).unwrap());
         assert_eq!(s.sessions["s"].state,light_core::model::LightState::Waiting);
     }
+}
+
+#[cfg(test)]mod legacy_watch_tests{
+    use super::*;
+    // Registered roots are canonical in production; preserve that contract on
+    // Windows too, where canonicalization adds the extended-length path prefix.
+    fn tmp()->PathBuf{let p=std::env::temp_dir().join(format!("ailight-legacy-test-{}",uuid::Uuid::new_v4()));fs::create_dir_all(&p).unwrap();fs::canonicalize(p).unwrap()}
+    #[test]fn real_subagent_is_not_internal(){let dir=tmp();let p=dir.join("x.jsonl");fs::write(&p,"{\"type\":\"session_meta\",\"payload\":{\"id\":\"child\",\"source\":{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"main\",\"depth\":1}}}}}\n").unwrap();let mut c=Cursor::default();assert!(c.poll(&p,"child").unwrap());assert!(!c.internal);fs::remove_dir_all(dir).unwrap();}
+    #[test]fn unknown_subagent_is_not_internal(){let dir=tmp();let p=dir.join("x.jsonl");for source in [serde_json::json!("subagent"),serde_json::json!({"subagent":"unknown"})]{fs::write(&p,format!("{}\n",serde_json::json!({"type":"session_meta","payload":{"id":"s","source":source}}))).unwrap();let mut c=Cursor::default();assert!(c.poll(&p,"s").unwrap());assert!(!c.internal);}fs::remove_dir_all(dir).unwrap();}
+    #[test]fn vscode_main_is_not_internal(){let dir=tmp();let p=dir.join("x.jsonl");fs::write(&p,"{\"type\":\"session_meta\",\"payload\":{\"id\":\"s\",\"cli_version\":\"0.157.1\",\"source\":\"vscode\"}}\n").unwrap();let mut c=Cursor::default();assert!(c.poll(&p,"s").unwrap());assert!(!c.internal);fs::remove_dir_all(dir).unwrap();}
+    #[test]fn discovery_missing_required_root_is_not_absence(){let dir=tmp();let mut o=Observer::default();assert!(!o.discover(&BTreeSet::from([dir.clone()]),&BTreeSet::from(["s".into()])));fs::remove_dir_all(dir).unwrap();}
+    #[test]fn discovery_clean_search_and_optional_archive(){let dir=tmp();fs::create_dir(dir.join("sessions")).unwrap();let mut o=Observer::default();assert!(o.discover(&BTreeSet::from([dir.clone()]),&BTreeSet::from(["s".into()])));assert!(o.discovered.is_empty());fs::remove_dir_all(dir).unwrap();}
+    #[test]fn discovery_finds_matching_only(){let dir=tmp();let nested=dir.join("sessions/2026/09/27");fs::create_dir_all(&nested).unwrap();fs::write(nested.join("rollout-t-s.jsonl"),"{}").unwrap();fs::write(nested.join("rollout-t-other.jsonl"),"{}").unwrap();let mut o=Observer::default();assert!(o.discover(&BTreeSet::from([dir.clone()]),&BTreeSet::from(["s".into()])));assert_eq!(o.discovered.len(),1);assert!(o.discovered.contains_key("s"));fs::remove_dir_all(dir).unwrap();}
 }

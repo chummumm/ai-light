@@ -56,3 +56,8 @@ Windows 显示的是“工作/等待/异常/完成/未参与”分类及逐会�
 - https://developers.openai.com/codex/hooks （特别是 Stop 继续执行、SessionEnd 延迟及 transcript 非稳定接口说明）
 - https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs
 - https://github.com/openai/codex/blob/main/codex-rs/docs/protocol_v1.md
+
+
+## 0.3.5 补充：无证据旧记录
+
+旧版“未核实仍参与灯态”的规则在仅有旧 UserPromptSubmit 且从未绑定的迁移记录上不再适用。见 [未核实旧记录](UNVERIFIED-LEGACY.md)：单列未知、保留原始状态、允许恢复；绝不把无日志推断为完成。

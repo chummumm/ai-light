@@ -1,0 +1,10 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { counts, summary, caption, detail, isUnverified } from '../ui/sessions-ui.js';
+const old={state:'off',event:'UnverifiedLegacy:UserPromptSubmit'};
+test('unknown projection not counted as working or completed',()=>{assert.equal(counts([old]).unknown,1);assert.equal(counts([old]).off,0);assert.equal(counts([old]).done,0);});
+test('mixed real work and unknown',()=>{const x=counts([old,{state:'working'}]);assert.equal(x.working,1);assert.equal(x.unknown,1);});
+test('summary separates unknown',()=>assert.match(summary([old]),/未核实 1/));
+test('detail explicitly does not imply completion',()=>assert.match(detail(old,1),/未认定完成/));
+test('caption warns scope of light output',()=>assert.match(caption([old]),/灯光仅代表已纳入任务/));
+test('ordinary records unchanged',()=>{assert.equal(isUnverified({event:'PostToolUse'}),false);assert.equal(counts([{state:'done'}]).done,1);});
