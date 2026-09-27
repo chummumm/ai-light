@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "ai-light"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "axum",
@@ -2151,7 +2151,7 @@ dependencies = [
 
 [[package]]
 name = "light-agent"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "ctrlc",
@@ -2165,7 +2165,7 @@ dependencies = [
 
 [[package]]
 name = "light-core"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "anyhow",
  "serde",

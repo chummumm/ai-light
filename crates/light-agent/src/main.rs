@@ -13,6 +13,10 @@ fn main(){
         println!("{{}}");
         return;
     }
+    if args.first().map(String::as_str)==Some("notify") {
+        if let Err(e)=notify(args.get(1).map(String::as_str)){store::log_issue(&format!("notify not recorded: {e}"));}
+        return;
+    }
     if let Err(e)=run(&args){eprintln!("AI Light: {e:#}");std::process::exit(1);}
 }
 fn hook()->Result<()> {
@@ -22,6 +26,13 @@ fn hook()->Result<()> {
     let cfg=store::load_config()?;
     let run=std::env::var("AILIGHT_RUN_ID").unwrap_or_default();
     store::update(|s|s.apply(&value,now_ms(),cfg.question_heuristic,&run))
+}
+fn notify(raw:Option<&str>)->Result<()> {
+    let raw=raw.context("missing Codex notify JSON payload")?;
+    anyhow::ensure!(raw.len()<=1024*1024,"notify input exceeded 1 MiB limit");
+    let value:serde_json::Value=serde_json::from_str(raw)?;
+    let cfg=store::load_config()?;
+    store::update(|s|s.apply_notify(&value,now_ms(),cfg.question_heuristic))
 }
 fn parse_state(s:&str)->Result<LightState>{
     match s {"working"=>Ok(LightState::Working),"waiting"=>Ok(LightState::Waiting),"done"=>Ok(LightState::Done),"error"=>Ok(LightState::Error),"off"=>Ok(LightState::Off),_=>anyhow::bail!("expected working|waiting|done|error|off")}
@@ -61,7 +72,7 @@ fn run(args:&[String])->Result<()> {
             std::process::exit(code);
         }
         _=>{
-            println!("AI Light Rust agent {}\n\n  install --client PATH [--no-service]\n  relay\n  hook                 (Codex invokes this; JSON on stdin)\n  check\n  emit working|waiting|done|error|off\n  status\n  clear                (clears all source sessions)\n  codex -- [arguments] (optional CLI exit monitor)\n  uninstall",env!("CARGO_PKG_VERSION"));Ok(())
+            println!("AI Light Rust agent {}\n\n  install --client PATH [--no-service]\n  relay\n  hook                 (Codex invokes this; JSON on stdin)\n  notify JSON           (Codex completion fallback; JSON argv)\n  check\n  emit working|waiting|done|error|off\n  status\n  clear                (clears all source sessions)\n  codex -- [arguments] (optional CLI exit monitor)\n  uninstall",env!("CARGO_PKG_VERSION"));Ok(())
         }
     }
 }

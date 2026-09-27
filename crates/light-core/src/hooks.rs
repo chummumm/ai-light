@@ -40,6 +40,10 @@ impl LocalState {
     pub fn apply(&mut self, input: &Value, now: u64, question_heuristic: bool, run_id: &str) -> Result<bool> {
         let event = text(input, "hook_event_name");
         if !HOOK_EVENTS.contains(&event) { return Ok(false); }
+        // Codex TUI creates a hidden temporary thread for automatic task-title
+        // generation. Current builds can expose that helper through lifecycle
+        // integrations, so never let its Working state outrank the real task.
+        if event == "UserPromptSubmit" && is_internal_title_payload(input) { return Ok(false); }
         // Some versions include agent_id on non-lifecycle hooks. Do not turn a
         // child completion into the main task's completion.
         if !text(input,"agent_id").is_empty() { return Ok(false); }
@@ -110,6 +114,52 @@ impl LocalState {
         self.revision=self.revision.saturating_add(1); s.version=self.revision;
         Ok(true)
     }
+
+    /// Completion fallback for Codex's user-level `notify` callback.
+    ///
+    /// This path never creates a session. A completion is accepted only when
+    /// hooks have already registered the same session/turn locally.
+    pub fn apply_notify(&mut self, input: &Value, now: u64, question_heuristic: bool) -> Result<bool> {
+        if text(input, "type") != "agent-turn-complete" { return Ok(false); }
+        let turn = identifier(text(input, "turn-id"));
+        if turn.is_empty() { return Ok(false); }
+        let thread = identifier(text(input, "thread-id"));
+
+        // Some Codex builds emit agent-turn-complete for the hidden title
+        // generator. If an older hook path happened to register that helper,
+        // remove only that matching helper session instead of marking it Done.
+        if is_internal_title_payload(input) {
+            if !thread.is_empty()
+                && self.sessions.get(&thread).is_some_and(|s| s.turn.is_empty() || s.turn == turn)
+                && self.sessions.remove(&thread).is_some()
+            {
+                self.revision = self.revision.saturating_add(1);
+                return Ok(true);
+            }
+            return Ok(false);
+        }
+
+        let id = if !thread.is_empty() {
+            let Some(session) = self.sessions.get(&thread) else { return Ok(false); };
+            if !session.turn.is_empty() && session.turn != turn { return Ok(false); }
+            thread
+        } else {
+            // Older notify payloads lacked thread-id. Use turn-id only if it
+            // identifies exactly one already-known session.
+            let mut matches = self.sessions.values().filter(|s| s.turn == turn).map(|s| s.id.clone());
+            let Some(first) = matches.next() else { return Ok(false); };
+            if matches.next().is_some() { return Ok(false); }
+            first
+        };
+        let last = input.get("last-assistant-message").and_then(Value::as_str).unwrap_or("");
+        let mut stop = serde_json::Map::new();
+        stop.insert("hook_event_name".into(), Value::String("Stop".into()));
+        stop.insert("session_id".into(), Value::String(id));
+        stop.insert("turn_id".into(), Value::String(turn));
+        stop.insert("last_assistant_message".into(), Value::String(last.to_owned()));
+        self.apply(&Value::Object(stop), now, question_heuristic, "")
+    }
+
     pub fn emit(&mut self, id: &str, state: LightState, now: u64) {
         self.revision=self.revision.saturating_add(1);
         let s=self.sessions.entry(id.to_owned()).or_insert_with(|| LocalSession::new(id.to_owned(),"manual".into(),now));
@@ -136,6 +186,19 @@ fn identifier(s: &str) -> String {
 }
 fn is_question_tool(tool: &str) -> bool {
     matches!(tool, "request_user_input" | "AskUserQuestion") || tool.ends_with("__request_user_input")
+}
+fn internal_title_text(s:&str)->bool {
+    let s=s.trim_start();
+    s.starts_with("Generate a concise, single-line task title of at most ")
+        && s.contains("Start with an imperative verb.")
+        && s.contains("Do not answer the request.")
+        && (s.contains("\n\nUser prompt:\n") || s.contains("\nPrioritize the current task and latest substantive user request."))
+}
+fn is_internal_title_payload(input:&Value)->bool {
+    if input.get("prompt").and_then(Value::as_str).is_some_and(internal_title_text) { return true; }
+    input.get("input-messages").and_then(Value::as_array)
+        .and_then(|items|items.first()).and_then(Value::as_str)
+        .is_some_and(internal_title_text)
 }
 pub fn looks_like_question(message: &str) -> bool {
     let tail:String=message.chars().rev().take(600).collect::<String>().chars().rev().collect();
@@ -185,6 +248,17 @@ mod tests {
     #[test] fn duplicate_stop_keeps_timestamp() {let mut s=LocalState::default();s.apply(&event("Stop"),1,true,"").unwrap();s.apply(&event("Stop"),10000,true,"").unwrap();assert_eq!(s.sessions["s"].changed_ms,1);}
     #[test] fn interrupt_not_error() {let mut s=LocalState::default();s.apply(&event("Interrupt"),0,true,"").unwrap();assert_eq!(state(&s),LightState::Waiting);}
     #[test] fn normal_exit_preserves_done_timer() {let mut s=LocalState::default();s.apply(&event("Stop"),1,true,"").unwrap();s.apply(&event("SessionEnd"),5,true,"").unwrap();assert_eq!(s.sessions["s"].changed_ms,1);}
+    fn notify(turn:&str)->Value {json!({"type":"agent-turn-complete","thread-id":"s","turn-id":turn,"last-assistant-message":"done"})}
+    #[test] fn notify_completes_registered_turn() {let mut s=LocalState::default();s.apply(&event("UserPromptSubmit"),1,true,"").unwrap();assert!(s.apply_notify(&notify("t"),2,true).unwrap());assert_eq!(state(&s),LightState::Done);}
+    #[test] fn notify_unknown_thread_is_ignored() {let mut s=LocalState::default();s.apply(&event("UserPromptSubmit"),1,true,"").unwrap();let mut n=notify("t");n["thread-id"]=json!("background-title");assert!(!s.apply_notify(&n,2,true).unwrap());assert_eq!(state(&s),LightState::Working);}
+    fn title_prompt()->String {"Generate a concise, single-line task title of at most 36 characters and under five words where possible. Start with an imperative verb. Write in the user's language. Do not answer the request.\n\nUser prompt:\nFix the light".into()}
+    #[test] fn title_prompt_hook_is_ignored() {let mut s=LocalState::default();let mut e=event("UserPromptSubmit");e["session_id"]=json!("title-thread");e["prompt"]=json!(title_prompt());assert!(!s.apply(&e,1,true,"").unwrap());assert!(!s.sessions.contains_key("title-thread"));}
+    #[test] fn title_notify_removes_legacy_phantom_session() {let mut s=LocalState::default();let mut e=event("UserPromptSubmit");e["session_id"]=json!("title-thread");s.apply(&e,1,true,"").unwrap();let mut n=notify("t");n["thread-id"]=json!("title-thread");n["input-messages"]=json!([title_prompt()]);assert!(s.apply_notify(&n,2,true).unwrap());assert!(!s.sessions.contains_key("title-thread"));}
+    #[test] fn ordinary_title_request_is_not_filtered() {let mut s=LocalState::default();let mut e=event("UserPromptSubmit");e["prompt"]=json!("Generate a concise title for my README");assert!(s.apply(&e,1,true,"").unwrap());assert_eq!(state(&s),LightState::Working);}
+    #[test] fn notify_wrong_turn_is_ignored() {let mut s=LocalState::default();s.apply(&event("UserPromptSubmit"),1,true,"").unwrap();assert!(!s.apply_notify(&notify("other"),2,true).unwrap());assert_eq!(state(&s),LightState::Working);}
+    #[test] fn legacy_notify_without_thread_matches_unique_turn() {let mut s=LocalState::default();s.apply(&event("UserPromptSubmit"),1,true,"").unwrap();let mut n=notify("t");n.as_object_mut().unwrap().remove("thread-id");assert!(s.apply_notify(&n,2,true).unwrap());assert_eq!(state(&s),LightState::Done);}
+    #[test] fn notify_question_waits() {let mut s=LocalState::default();s.apply(&event("UserPromptSubmit"),1,true,"").unwrap();let mut n=notify("t");n["last-assistant-message"]=json!("请确认是否继续？");s.apply_notify(&n,2,true).unwrap();assert_eq!(state(&s),LightState::Waiting);}
+    #[test] fn duplicate_notify_does_not_extend_done_timer() {let mut s=LocalState::default();s.apply(&event("UserPromptSubmit"),1,true,"").unwrap();s.apply_notify(&notify("t"),2,true).unwrap();s.apply_notify(&notify("t"),9000,true).unwrap();assert_eq!(s.sessions["s"].changed_ms,2);}
     #[test] fn secrets_not_serialized() {let mut s=LocalState::default();let mut e=event("UserPromptSubmit");e["prompt"]=json!("SECRET_PASSWORD");e["cwd"]=json!("/private/path");s.apply(&e,0,true,"").unwrap();let text=serde_json::to_string(&s).unwrap();assert!(!text.contains("SECRET_PASSWORD"));assert!(!text.contains("/private/path"));}
     #[test] fn explicit_failure_only() {assert!(!explicit_tool_failure(&json!("there is an error handler in this file")));assert!(explicit_tool_failure(&json!("Process exited with code 2")));assert!(!explicit_tool_failure(&json!({"exit_code":0})));}
 }
