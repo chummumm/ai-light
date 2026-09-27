@@ -1,0 +1,70 @@
+name: Prepare countdown repair
+on:
+  push:
+    branches: [fix/completion-countdown-036]
+    paths:
+      - '.maintenance/prepare-countdown.mjs'
+      - '.github/workflows/prepare-countdown.yml'
+permissions:
+  contents: write
+concurrency:
+  group: prepare-countdown-036
+  cancel-in-progress: false
+jobs:
+  prepare:
+    if: github.repository == 'chummumm/ai-light' && github.ref == 'refs/heads/fix/completion-countdown-036'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f
+        with:
+          node-version: '22'
+      - run: rustup toolchain install 1.98.1 --profile minimal
+      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: countdown-prepare-1.98.1-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            linux-rust-1.98.1-
+      - name: Reproduce old behavior, then apply and test
+        run: |
+          set -Eeuo pipefail
+          node --check .maintenance/prepare-countdown.mjs
+          node .maintenance/prepare-countdown.mjs --reproduce
+          node .maintenance/prepare-countdown.mjs --apply
+          git diff --check
+          bash -n scripts/release.sh
+          cargo test -p light-core -p light-agent --locked 2>&1 | tee countdown-rust-tests.log
+          node --test tests/*.test.mjs | tee countdown-ui-tests.log
+          node scripts/check-ui.mjs
+      - name: Commit tested files to the repair branch only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          gh auth setup-git
+          git add Cargo.toml Cargo.lock src-tauri/tauri.conf.json ui/index.html CHANGELOG.md
+          git add crates/light-core/src/model.rs src-tauri/src/main.rs src-tauri/src/server.rs
+          git add scripts/release.sh .github/workflows/build.yml docs/releases/v0.3.6.md tests/countdown-wiring.test.mjs
+          git commit -m 'fix: retain completed countdowns across source outages and apply duration edits'
+          git push origin HEAD:refs/heads/fix/completion-countdown-036
+          git rev-parse HEAD > tested-commit.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: countdown-preparation-results
+          path: |
+            baseline-countdown.log
+            countdown-rust-tests.log
+            countdown-ui-tests.log
+            tested-commit.txt
+          retention-days: 14
