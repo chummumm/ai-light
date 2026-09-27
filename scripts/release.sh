@@ -4,6 +4,10 @@ set -Eeuo pipefail
 : "${SOURCE_SHA:?missing immutable source commit}"
 : "${RELEASE_VERSION:?missing version}"
 [[ "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid version' >&2; exit 1; }
+stable="${RELEASE_STABLE:-false}"
+[[ "$stable" == true || "$stable" == false ]] || { echo 'Invalid release channel' >&2; exit 1; }
+channel=pre-release
+[[ "$stable" != true ]] || channel=stable
 tag="v$RELEASE_VERSION"
 root="$PWD"; release="$root/release-assets"; mkdir -p "$release"
 mapfile -t installers < <(find incoming -type f -name '*-setup.exe')
@@ -18,7 +22,7 @@ if [[ -f incoming/ubuntu-agent/dependency-inventory.json ]]; then cp incoming/ub
 printf 'source_commit=%s\nversion=%s\nrust=1.98.1\nworkflow_run=%s\n' "$SOURCE_SHA" "$RELEASE_VERSION" "${GITHUB_RUN_ID:-local}" > "$release/build-info.txt"
 (cd "$release"; sha256sum -- * > SHA256SUMS)
 cat > "$release/RELEASE-NOTES.md" <<EOF
-# AI Light $RELEASE_VERSION (pre-release)
+# AI Light $RELEASE_VERSION ($channel)
 
 Windows x64 tray application + Ubuntu 24.04 x64 agent, built by GitHub Actions.
 
@@ -30,11 +34,18 @@ Windows x64 tray application + Ubuntu 24.04 x64 agent, built by GitHub Actions.
 Includes configurable breathing lights, state-based sound reminders, low-battery
 sound protection, measured battery percentage/voltage, tray and user login startup.
 
-**Unsigned pre-release.** Cloud compilation/tests are not physical BLE, sound,
+**Unsigned build.** Cloud compilation/tests are not physical BLE, sound,
 battery or installer runtime certification. No vendor executable or firmware is included.
 Check SHA256SUMS. Do not disable Windows security protections.
 EOF
+if [[ -f "docs/releases/v$RELEASE_VERSION.md" ]]; then
+  printf '\n' >> "$release/RELEASE-NOTES.md"
+  cat "docs/releases/v$RELEASE_VERSION.md" >> "$release/RELEASE-NOTES.md"
+fi
 # Never overwrite an already published release or unrelated tag.
+if git show-ref --verify --quiet "refs/tags/$tag"; then
+  [[ "$(git rev-parse "$tag^{commit}")" == "$SOURCE_SHA" ]] || { echo 'Existing tag points at another source commit' >&2; exit 1; }
+fi
 if gh release view "$tag" >/dev/null 2>&1; then
   echo "Release $tag already exists; increase the project version before publishing." >&2; exit 1
 fi
@@ -42,4 +53,8 @@ gh release create "$tag" --target "$SOURCE_SHA" --title "AI Light $RELEASE_VERSI
 # Notes are the release body; do not upload an unchecksummed duplicate.
 rm "$release/RELEASE-NOTES.md"
 gh release upload "$tag" "$release"/*
-gh release edit "$tag" --draft=false --prerelease
+if [[ "$stable" == true ]]; then
+  gh release edit "$tag" --draft=false --prerelease=false --latest
+else
+  gh release edit "$tag" --draft=false --prerelease
+fi

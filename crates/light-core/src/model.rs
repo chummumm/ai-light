@@ -125,7 +125,10 @@ impl Engine {
             result.sources.push(SourceView { id: source_id.clone(), online, last_seen_ms: source.seen_ms, sessions: source.sessions.len() });
             for session in source.sessions.values() {
                 let expired = session.expires_ms.is_some_and(|deadline| now >= deadline);
-                let state = if online && !expired { session.wire.state } else { LightState::Off };
+                // A received completion has a local deadline independent of relay liveness.
+                // Preserve the real online flag: offline sources must not re-enable sound.
+                let retain_completion = session.wire.state == LightState::Done;
+                let state = if !expired && (online || retain_completion) { session.wire.state } else { LightState::Off };
                 let remaining = session.expires_ms.map(|t| t.saturating_sub(now));
                 if state > result.state || (state == result.state && session.accepted_ms >= newest) {
                     result.state = state;
@@ -142,6 +145,22 @@ impl Engine {
         }
         result
     }
+    /// Adjust pending completion deadlines from the original completion time.
+    /// Changing settings must not revive expired reminders or reset sound episodes.
+    pub fn reconfigure_done_timer(&mut self, now: u64, done_seconds: u32) -> Result<()> {
+        ensure!((1..=3600).contains(&done_seconds), "invalid completion timer");
+        let duration_ms = u64::from(done_seconds) * 1000;
+        for source in self.sources.values_mut() {
+            for session in source.sessions.values_mut() {
+                if session.wire.state == LightState::Done
+                    && session.expires_ms.is_some_and(|deadline| now < deadline)
+                {
+                    session.expires_ms = Some(session.entered_ms.saturating_add(duration_ms));
+                }
+            }
+        }
+        Ok(())
+    }
     pub fn forget_source(&mut self, id: &str) { self.sources.remove(id); }
 }
 
@@ -154,8 +173,8 @@ mod tests {
     }
     #[test] fn done_expires_at_five_minutes() {
         let mut e=Engine::default(); e.accept(snap(1,LightState::Done,0),1000,300).unwrap();
-        assert_eq!(e.view(300_999,400).state,LightState::Done);
-        assert_eq!(e.view(301_000,400).state,LightState::Off);
+        assert_eq!(e.view(300_999,90).state,LightState::Done);
+        assert_eq!(e.view(301_000,90).state,LightState::Off);
     }
     #[test] fn duplicate_does_not_extend_done() {
         let mut e=Engine::default(); e.accept(snap(1,LightState::Done,0),0,300).unwrap();
