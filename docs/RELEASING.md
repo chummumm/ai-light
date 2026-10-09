@@ -2,7 +2,9 @@
 
 ## 自动构建
 
-main提交和Pull Request运行测试及Windows/Ubuntu构建，Actions的Artifacts提供`windows-x64`、`ubuntu-agent`和测试日志，保留30天。两端使用prepare输出的同一源码SHA，依赖用已提交Cargo.lock固定。Action引用完整commit SHA，Rust固定1.98.1、Tauri CLI2.11.5。
+包含源码、依赖、构建配置或运行资源变更的main提交和Pull Request运行测试及Windows/Ubuntu构建，Actions的Artifacts提供`windows-x64`、`ubuntu-agent`和测试日志，保留30天。两端使用prepare输出的同一源码SHA，依赖用已提交Cargo.lock固定。Action引用完整commit SHA，Rust固定1.98.1、Tauri CLI2.11.5。
+
+仅修改Markdown、MDX、reStructuredText、AsciiDoc、`docs/**`或GitHub issue/PR说明模板时，push和PR不启动自动构建或发布，包括提交信息带`[release]`的纯文档提交。文档配图归入`docs/**`；`ui/**`、`src-tauri/**`等实际运行资源、配置、依赖和构建脚本仍触发构建。文档与这些文件混合修改时照常执行。显式手动构建和版本标签不受文档路径过滤影响，保留原有发布条件。
 
 Cargo.lock已在初始化时提交。每次构建使用`--locked`，不会自动升级或修改依赖。需要有意更新依赖时由维护者审阅并提交锁文件。常规prepare和PR构建只需contents:read，不自动推送代码。
 
