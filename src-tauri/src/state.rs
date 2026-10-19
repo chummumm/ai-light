@@ -87,6 +87,13 @@ impl Shared {
         d.hardware.error=r.error.clone();
     }
     pub fn request_refresh(&self){self.force_output.store(true,Ordering::Relaxed);self.force_battery.store(true,Ordering::Relaxed);self.force_power.store(true,Ordering::Relaxed);}
+    pub fn set_paused(&self,paused:bool){
+        let now=self.now();let mut d=self.lock();d.paused=paused;d.preview=None;
+        // The physical lamp can disagree even when the computed state is Off.
+        // Do not rely on an Off -> Off state transition to trigger a write.
+        self.force_output.store(true,Ordering::Relaxed);
+        d.log(now,"output",if paused{"已暂停灯光输出"}else{"已恢复自动灯光"}.into());
+    }
 }
 impl Data {
     pub fn connected(&self)->bool{self.hardware.present==Some(true)&&self.hardware.error.is_none()}

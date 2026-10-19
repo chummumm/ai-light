@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.7 — LED output recovery (unreleased)
+
+- Retry LED commands when Windows accepts a write but no valid device acknowledgement arrives. Unconfirmed or failed attempts back off for 5, 10, 20 and at most 30 seconds; a changed target is sent immediately.
+- Reassert the current LED command every 30 seconds after acknowledgement so a silent device reset or stale physical state cannot remain hidden behind the output cache. Only the existing volatile LED command is resent; task countdowns and sound episodes are not restarted.
+- Invalidate LED delivery and cached sound capabilities/volume after a detected suspend or clock discontinuity. Both window and tray pause/resume explicitly request fresh output, including an unchanged Off state.
+- Add simulated delivery-loss and recovery regressions. Reasserting a breathing command may restart its physical phase and still needs device observation.
+- The repair is in the Windows receiver. Existing Ubuntu 0.3.5/0.3.6 agents, hooks and task records remain compatible; no reinstall or state reset is needed.
+
 ## 0.3.6 — Completion countdown repair
 
 - A received completion now retains its original local deadline when the source heartbeat times out. Working/waiting/error liveness protections are unchanged.
