@@ -2,6 +2,7 @@
 mod battery;
 mod config;
 mod devices;
+mod device_events;
 mod hardware;
 mod platform;
 mod process;
@@ -43,6 +44,8 @@ fn persist_settings(shared:&Shared,mut settings:config::Config)->Result<()> {
     atomic_json(&shared.dir.join("settings.json"),&settings)?;
     let changed_device=d.config.serial!=settings.serial;
     let sound_changed=d.config.sound!=settings.sound;
+    let battery_changed=d.config.battery_poll_seconds!=settings.battery_poll_seconds||d.config.sound.enabled!=settings.sound.enabled;
+    let voltage_changed=d.config.voltage_enabled!=settings.voltage_enabled;
     if sound_changed||changed_device {
         let now=shared.now();let snapshot=d.engine.view(now,d.config.source_timeout_seconds);let cfg=d.config.sound.clone();
         d.sound.stop_visible(now,&snapshot.sessions,&cfg);d.sound.reconfigure();shared.sound_cancel.store(true,Ordering::SeqCst);
@@ -59,7 +62,12 @@ fn persist_settings(shared:&Shared,mut settings:config::Config)->Result<()> {
     }
     d.config=settings;
     d.log(shared.now(),"settings","设置已保存；声音设置改变不会补播旧提醒".into());
-    drop(d);shared.request_refresh();Ok(())
+    drop(d);
+    // The output owner compares effective LED state/parameters itself. Saving
+    // theme, sound or telemetry preferences must not restart a breathing effect.
+    if changed_device||battery_changed{shared.force_battery.store(true,Ordering::Relaxed);}
+    if changed_device||voltage_changed{shared.force_power.store(true,Ordering::Relaxed);}
+    Ok(())
 }
 #[tauri::command]
 fn save_settings(shared:State<'_,Arc<Shared>>,settings:config::Config)->UiResult<()> {persist_settings(&shared,settings).map_err(message)}
@@ -127,7 +135,7 @@ fn begin_exit(app:&AppHandle,shared:Arc<Shared>){
     let app=app.clone();
     std::thread::spawn(move||{
         let start=Instant::now();
-        while !shared.hardware_stopped.load(Ordering::Relaxed)&&start.elapsed()<Duration::from_millis(2600){std::thread::sleep(Duration::from_millis(40));}
+        while !shared.hardware_stopped.load(Ordering::Relaxed)&&start.elapsed()<Duration::from_secs(5){std::thread::sleep(Duration::from_millis(40));}
         app.exit(0);
     });
 }
