@@ -1,6 +1,6 @@
 //! Serialized HID owner for LED, voltage and buzzer; separate bounded GATT reader.
 use crate::{process,state::Shared,worker::{Request,Reply}};
-use light_core::{model::LightState,power::SAMPLE_INTERVAL_MS,sound::{Action,Gate,raw_volume}};
+use light_core::{led_output::{LedCommand,LedDelivery,LedOutputSync},model::LightState,power::SAMPLE_INTERVAL_MS,sound::{Action,Gate,raw_volume}};
 use std::{sync::{Arc,atomic::Ordering},time::{Duration,Instant}};
 
 pub fn start(shared:Arc<Shared>){
@@ -8,16 +8,17 @@ pub fn start(shared:Arc<Shared>){
     std::thread::spawn(move||output_loop(&shared));
 }
 fn output_loop(shared:&Shared){
-    let mut last_sent:Option<(LightState,u16,u16,String)>=None;
+    let mut led_sync=LedOutputSync::default();
     let mut device_serial=String::new();
     let mut verified_volume:Option<u8>=None;
     let mut verified_capability=false;
     let mut last_probe=Instant::now()-Duration::from_secs(10);
-    let mut next_voltage=Instant::now();let mut retry=Instant::now();
+    let mut next_voltage=Instant::now();
     let mut last_wall=light_core::now_ms();
     while !shared.stop.load(Ordering::Relaxed){
         let now=shared.now();let wall=light_core::now_ms();
         if wall<last_wall||wall.saturating_sub(last_wall)>10_000 {
+            led_sync.invalidate();verified_volume=None;verified_capability=false;
             let mut d=shared.lock();d.sound.suspend();d.battery.stale=true;d.power.updated_ms=None;
             shared.force_battery.store(true,Ordering::Relaxed);shared.sound_cancel.store(true,Ordering::SeqCst);
         }
@@ -37,7 +38,7 @@ fn output_loop(shared:&Shared){
             if !device_serial.is_empty(){
                 let _=process::call(&Request::Buzzer{serial:device_serial.clone(),mode:None,raw_volume:None,verify_capability:false,not_after_ms:light_core::now_ms()+800},Duration::from_millis(900),None);
             }
-            verified_volume=None;verified_capability=false;last_sent=None;next_voltage=Instant::now();
+            verified_volume=None;verified_capability=false;led_sync.invalidate();next_voltage=Instant::now();
             device_serial=cfg.serial.clone();
         }
         if let Some(action)=action {
@@ -74,21 +75,25 @@ fn output_loop(shared:&Shared){
             std::thread::sleep(Duration::from_millis(50));continue;
         }
         let force=shared.force_output.swap(false,Ordering::Relaxed);
-        if force{verified_volume=None;verified_capability=false;}
+        if force{verified_volume=None;verified_capability=false;led_sync.invalidate();}
         let forced_voltage=shared.force_power.swap(false,Ordering::Relaxed);
-        let wanted=(output,cfg.period_ms,cfg.fade_ms,cfg.serial.clone());
-        let send=force||(last_sent.as_ref()!=Some(&wanted)&&Instant::now()>=retry);
+        let wanted=LedCommand{state:output,period_ms:cfg.period_ms,fade_ms:cfg.fade_ms,serial:cfg.serial.clone()};
+        let send=led_sync.should_send(&wanted,shared.now());
         let voltage=cfg.voltage_enabled&&(forced_voltage||Instant::now()>=next_voltage);
         if send||voltage||last_probe.elapsed()>=Duration::from_secs(8) {
             let request=Request::Hid{serial:cfg.serial.clone(),state:if send{Some(output)}else{None},period_ms:cfg.period_ms,fade_ms:cfg.fade_ms,power:voltage};
+            let started_ms=shared.now();
             let r=process::call(&request,Duration::from_secs(3),Some(&shared.stop)).unwrap_or_else(|e|Reply{error:Some(e.to_string()),..Reply::default()});
             if shared.stop.load(Ordering::Relaxed){break;}
+            let failed=r.present==Some(false)||r.error.is_some();
             if send {
-                if r.api_success==Some(true)&&r.acknowledged!=Some(false){last_sent=Some(wanted);}
-                else{last_sent=None;retry=Instant::now()+Duration::from_secs(5);}
+                let delivery=if failed||r.api_success!=Some(true)||r.acknowledged==Some(false){LedDelivery::Failed}
+                    else if r.acknowledged==Some(true){LedDelivery::Confirmed}else{LedDelivery::Unconfirmed};
+                led_sync.record_attempt(wanted,started_ms,delivery);
             }
-            if r.present==Some(false)||r.error.is_some(){
-                verified_volume=None;verified_capability=false;last_sent=None;retry=Instant::now()+Duration::from_secs(5);
+            if failed{
+                verified_volume=None;verified_capability=false;
+                if !send{led_sync.transport_failed(shared.now());}
             }
             if shared.lock().config.serial==cfg.serial {shared.hardware_result(&r,send);}
             if voltage {

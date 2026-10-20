@@ -4,6 +4,7 @@ pub mod fsutil;
 pub mod hooks;
 pub mod model;
 pub mod protocol;
+pub mod led_output;
 pub mod battery;
 pub mod network;
 pub mod power;

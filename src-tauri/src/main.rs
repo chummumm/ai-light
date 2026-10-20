@@ -35,8 +35,7 @@ fn set_preview(shared:State<'_,Arc<Shared>>,state:LightState,seconds:u32)->UiRes
 fn clear_preview(shared:State<'_,Arc<Shared>>){shared.lock().preview=None;}
 #[tauri::command]
 fn set_paused(shared:State<'_,Arc<Shared>>,paused:bool){
-    let mut d=shared.lock();d.paused=paused;d.preview=None;
-    d.log(shared.now(),"output",if paused{"已暂停灯光输出"}else{"已恢复自动灯光"}.into());
+    shared.set_paused(paused);
 }
 fn persist_settings(shared:&Shared,mut settings:config::Config)->Result<()> {
     settings.serial=settings.serial.to_lowercase();settings.validate()?;
@@ -154,7 +153,7 @@ fn tray(app:&mut tauri::App)->Result<()> {
             let s=app.state::<Arc<Shared>>();
             match event.id.as_ref(){
                 "open"=>show(app),
-                "pause"=>{let mut d=s.lock();d.paused=!d.paused;d.preview=None;},
+                "pause"=>{let paused=!s.lock().paused;s.set_paused(paused);},
                 "refresh"=>s.request_refresh(),
                 "sound-mute"=>mute_current(&s),
                 "sound-toggle"=>{let enabled=!s.lock().config.sound.enabled;if let Err(e)=sound_enabled(&s,enabled){s.log("settings",format!("声音设置失败：{e}"));}},
