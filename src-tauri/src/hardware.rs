@@ -1,5 +1,5 @@
 //! Serialized HID owner for LED, voltage and buzzer; separate bounded GATT reader.
-use crate::{process,state::Shared,worker::{Request,Reply}};
+use crate::{device_events::ResumeMonitor,process,state::Shared,worker::{Request,Reply}};
 use light_core::{led_output::{LedCommand,LedDelivery,LedOutputSync},model::LightState,power::SAMPLE_INTERVAL_MS,sound::{Action,Gate,raw_volume}};
 use std::{sync::{Arc,atomic::Ordering},time::{Duration,Instant}};
 
@@ -8,6 +8,7 @@ pub fn start(shared:Arc<Shared>){
     std::thread::spawn(move||output_loop(&shared));
 }
 fn output_loop(shared:&Shared){
+    let resume_monitor=ResumeMonitor::new().map_err(|e|shared.log("hardware",format!("系统恢复通知不可用：{e:#}"))).ok();
     let mut led_sync=LedOutputSync::default();
     let mut device_serial=String::new();
     let mut verified_volume:Option<u8>=None;
@@ -17,8 +18,15 @@ fn output_loop(shared:&Shared){
     let mut last_wall=light_core::now_ms();
     while !shared.stop.load(Ordering::Relaxed){
         let now=shared.now();let wall=light_core::now_ms();
-        if wall<last_wall||wall.saturating_sub(last_wall)>10_000 {
-            led_sync.invalidate();verified_volume=None;verified_capability=false;
+        let resumed=resume_monitor.as_ref().is_some_and(|monitor|monitor.take_resumed());
+        if resumed {
+            led_sync.invalidate();last_probe=Instant::now()-Duration::from_secs(10);
+            shared.log("output","收到系统恢复通知，将重新应用当前灯态一次");
+        }
+        if resumed||wall<last_wall||wall.saturating_sub(last_wall)>10_000 {
+            // Clock corrections still stale telemetry/sound, but cannot prove
+            // the lamp stopped breathing and must not invalidate LED output.
+            verified_volume=None;verified_capability=false;
             let mut d=shared.lock();d.sound.suspend();d.battery.stale=true;d.power.updated_ms=None;
             shared.force_battery.store(true,Ordering::Relaxed);shared.sound_cancel.store(true,Ordering::SeqCst);
         }
@@ -38,7 +46,7 @@ fn output_loop(shared:&Shared){
             if !device_serial.is_empty(){
                 let _=process::call(&Request::Buzzer{serial:device_serial.clone(),mode:None,raw_volume:None,verify_capability:false,not_after_ms:light_core::now_ms()+800},Duration::from_millis(900),None);
             }
-            verified_volume=None;verified_capability=false;led_sync.invalidate();next_voltage=Instant::now();
+            verified_volume=None;verified_capability=false;led_sync=LedOutputSync::default();next_voltage=Instant::now();
             device_serial=cfg.serial.clone();
         }
         if let Some(action)=action {
@@ -79,23 +87,31 @@ fn output_loop(shared:&Shared){
         let forced_voltage=shared.force_power.swap(false,Ordering::Relaxed);
         let wanted=LedCommand{state:output,period_ms:cfg.period_ms,fade_ms:cfg.fade_ms,serial:cfg.serial.clone()};
         let send=led_sync.should_send(&wanted,shared.now());
-        let voltage=cfg.voltage_enabled&&(forced_voltage||Instant::now()>=next_voltage);
+        let voltage_due=cfg.voltage_enabled&&(forced_voltage||Instant::now()>=next_voltage);
+        // Finish and return the LED receipt before any separate voltage read.
+        // A stalled telemetry query must not erase an already delivered result.
+        let voltage=voltage_due&&!send;
+        if voltage_due&&send{next_voltage=Instant::now();}
         if send||voltage||last_probe.elapsed()>=Duration::from_secs(8) {
             let request=Request::Hid{serial:cfg.serial.clone(),state:if send{Some(output)}else{None},period_ms:cfg.period_ms,fade_ms:cfg.fade_ms,power:voltage};
             let started_ms=shared.now();
             let r=process::call(&request,Duration::from_secs(3),Some(&shared.stop)).unwrap_or_else(|e|Reply{error:Some(e.to_string()),..Reply::default()});
             if shared.stop.load(Ordering::Relaxed){break;}
             let failed=r.present==Some(false)||r.error.is_some();
+            let reconnected=led_sync.observe_connection(r.link_connected);
             if send {
-                let delivery=if failed||r.api_success!=Some(true)||r.acknowledged==Some(false){LedDelivery::Failed}
-                    else if r.acknowledged==Some(true){LedDelivery::Confirmed}else{LedDelivery::Unconfirmed};
+                // A killed/timed-out worker may already have applied the LED.
+                // Only an explicit worker outcome is evidence for a safe retry.
+                let delivery=r.led_delivery.unwrap_or(LedDelivery::Unconfirmed);
                 led_sync.record_attempt(wanted,started_ms,delivery);
             }
             if failed{
                 verified_volume=None;verified_capability=false;
-                if !send{led_sync.transport_failed(shared.now());}
             }
-            if shared.lock().config.serial==cfg.serial {shared.hardware_result(&r,send);}
+            if shared.lock().config.serial==cfg.serial {
+                if reconnected{shared.log("output","检测到蓝牙断开后重新连接，将应用最新灯态一次");}
+                shared.hardware_result(&r,send);
+            }
             if voltage {
                 let now=shared.now();let mut d=shared.lock();
                 next_voltage=Instant::now()+Duration::from_millis(SAMPLE_INTERVAL_MS);
@@ -118,12 +134,12 @@ fn output_loop(shared:&Shared){
     let cfg=shared.lock().config.clone();
     let _=process::call(&Request::Buzzer{serial:cfg.serial.clone(),mode:None,raw_volume:None,verify_capability:false,not_after_ms:light_core::now_ms()+800},Duration::from_millis(900),None);
     if cfg.exit_off {
-        let _=process::call(&Request::Hid{serial:cfg.serial,state:Some(LightState::Off),period_ms:cfg.period_ms,fade_ms:cfg.fade_ms,power:false},Duration::from_millis(1300),None);
+        let _=process::call(&Request::Hid{serial:cfg.serial,state:Some(LightState::Off),period_ms:cfg.period_ms,fade_ms:cfg.fade_ms,power:false},Duration::from_secs(3),None);
     }
     shared.hardware_stopped.store(true,Ordering::Relaxed);
 }
 fn battery_loop(shared:&Shared){
-    let mut last=Instant::now()-Duration::from_secs(600);let mut failed=false;
+    let mut last=Instant::now()-Duration::from_secs(600);
     while !shared.stop.load(Ordering::Relaxed){
         let (cfg,recovering)={let d=shared.lock();(d.config.clone(),d.sound.battery.recovery_poll(shared.now()))};
         if cfg.serial.is_empty(){std::thread::sleep(Duration::from_millis(500));continue;}
@@ -136,12 +152,11 @@ fn battery_loop(shared:&Shared){
             let now=shared.now();d.battery.attempted_ms=Some(now);let old_gate=d.sound.battery.gate(now);
             match result {
                 Ok(Reply{battery:Some(reading),error:None,..}) if reading.percent.is_some()=>{
-                    if failed{shared.force_output.store(true,Ordering::Relaxed);}failed=false;
                     d.sound.battery.observe(reading.percent.unwrap(),now);
                     d.battery.reading=Some(reading);d.battery.updated_ms=Some(now);d.battery.error=None;
                 }
-                Ok(r)=>{failed=true;d.sound.battery.fail();d.battery.error=Some(r.error.unwrap_or_else(||"没有有效电量读数".into()));}
-                Err(e)=>{failed=true;d.sound.battery.fail();d.battery.error=Some(e.to_string());}
+                Ok(r)=>{d.sound.battery.fail();d.battery.error=Some(r.error.unwrap_or_else(||"没有有效电量读数".into()));}
+                Err(e)=>{d.sound.battery.fail();d.battery.error=Some(e.to_string());}
             }
             let gate=d.sound.battery.gate(now);
             if gate!=Gate::Ready {d.sound.stop_current();shared.sound_cancel.store(true,Ordering::SeqCst);}

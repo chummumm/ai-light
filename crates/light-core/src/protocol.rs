@@ -75,18 +75,20 @@ mod tests {
     }
 }
 
-/// Accept only a complete, checksum-valid response to the expected LED channel.
+/// Accept complete, checksum-valid LED replies; success must match the channel.
 pub fn led_ack(input: &[u8], expected_channel: u8) -> Option<bool> {
     let body=if input.first()==Some(&REPORT_ID){&input[1..]}else{input};
     if body.len()<5 || body[..2]!=[0x5e,0x5e]{return None;}
     let end=3usize.checked_add(body[2] as usize)?;
-    if end<6 || end>body.len(){return None;}
+    if end!=6 || end>body.len(){return None;}
     if body[..end].iter().fold(0u8,|a,b|a^b)!=0{return None;}
     match body[3] {0x84 if body[4]==expected_channel=>Some(true),0x44=>Some(false),_=>None}
 }
 #[cfg(test)] mod ack_tests {
     use super::*;
     #[test] fn ack_valid(){assert_eq!(led_ack(&[2,94,94,3,0x84,2,0x85],2),Some(true));}
+    #[test] fn rejection_valid(){assert_eq!(led_ack(&[2,94,94,3,0x44,2,0x45],2),Some(false));}
+    #[test] fn oversized_rejection_ignored(){assert_eq!(led_ack(&[94,94,4,0x44,2,0,0x42],2),None);}
     #[test] fn other_channel_ignored(){assert_eq!(led_ack(&[94,94,3,0x84,2,0x85],1),None);}
     #[test] fn corrupt_ignored(){assert_eq!(led_ack(&[94,94,3,0x84,2,0x80],2),None);}
     #[test] fn short_ignored(){assert_eq!(led_ack(&[2],2),None);}

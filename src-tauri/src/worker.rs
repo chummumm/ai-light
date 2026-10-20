@@ -1,6 +1,6 @@
 //! Isolated Windows operations. The parent owns scheduling and cancellation.
 use anyhow::{ensure, Result};
-use light_core::{battery::BatteryReading,model::LightState,power::PowerSample,sound::BeepMode};
+use light_core::{battery::BatteryReading,led_output::LedDelivery,model::LightState,power::PowerSample,sound::BeepMode};
 use serde::{Deserialize,Serialize};
 use std::io::{Read,Write};
 
@@ -14,6 +14,8 @@ pub enum Request {
 #[derive(Debug,Default,Serialize,Deserialize)]
 pub struct Reply {
     pub present:Option<bool>,pub device_name:Option<String>,pub api_success:Option<bool>,pub acknowledged:Option<bool>,
+    pub link_connected:Option<bool>,pub link_error:Option<String>,pub hid_responsive:Option<bool>,
+    pub led_delivery:Option<LedDelivery>,
     pub battery:Option<BatteryReading>,pub power:Option<PowerSample>,pub power_error:Option<String>,
     pub buzzer_api_success:Option<bool>,pub buzzer_acknowledged:Option<bool>,pub applied_volume:Option<u8>,pub capabilities:Option<u8>,
     pub error:Option<String>,
@@ -33,6 +35,17 @@ pub fn run()->Result<()> {
 fn native(_:Request)->Result<Reply>{anyhow::bail!("Windows HID worker only")}
 #[cfg(windows)]
 fn native(request:Request)->Result<Reply> {
+    let mut reply=Reply{
+        // Errors before the write starts can be retried. Once it may have been
+        // submitted, preserve that uncertainty even if a later read fails.
+        led_delivery:if matches!(&request,Request::Hid{state:Some(_),..}){Some(LedDelivery::Failed)}else{None},
+        ..Reply::default()
+    };
+    if let Err(e)=native_operation(request,&mut reply){reply.error=Some(format!("{e:#}"));}
+    Ok(reply)
+}
+#[cfg(windows)]
+fn native_operation(request:Request,reply:&mut Reply)->Result<()> {
     use anyhow::Context;
     use hidapi::{HidApi,HidDevice};
     use light_core::{protocol,telemetry,sound};
@@ -45,11 +58,23 @@ fn native(request:Request)->Result<Reply> {
         d.usage_page()==protocol::USAGE_PAGE&&d.usage()==protocol::USAGE&&
         d.serial_number().is_some_and(|s|s.eq_ignore_ascii_case(serial))
     ).collect();
-    if candidates.is_empty(){return Ok(Reply{present:Some(false),error:Some("未发现指定的蓝牙 HID 灯".into()),..Reply::default()});}
+    if candidates.is_empty(){
+        reply.present=Some(false);reply.link_connected=Some(false);
+        reply.error=Some("未发现指定的蓝牙 HID 灯".into());return Ok(());
+    }
     ensure!(candidates.len()==1,"ambiguous HID collection; refusing output");
     let target=candidates[0];
-    let mut reply=Reply{present:Some(true),device_name:target.product_string().map(str::to_owned),..Reply::default()};
-    if matches!(request,Request::Hid{state:None,power:false,..}){return Ok(reply);}
+    reply.present=Some(true);reply.device_name=target.product_string().map(str::to_owned);
+    if matches!(&request,Request::Hid{..}) {
+        match crate::device_events::connection_status(serial) {
+            Ok(connected)=>{
+                reply.link_connected=Some(connected);
+                if !connected{reply.error=Some("Windows 报告蓝牙连接已断开，等待重新连接".into());return Ok(());}
+            }
+            Err(e)=>reply.link_error=Some(format!("蓝牙连接状态未知：{e:#}")),
+        }
+    }
+    if matches!(request,Request::Hid{state:None,power:false,..}){return Ok(());}
     #[link(name="kernel32")]
     extern "system" {
         fn CreateFileW(name:*const u16,access:u32,share:u32,security:*const c_void,disposition:u32,flags:u32,template:isize)->isize;
@@ -83,7 +108,7 @@ fn native(request:Request)->Result<Reply> {
         let start=Instant::now();let mut b=[0;65];
         while start.elapsed()<Duration::from_millis(800){
             let n=input.read_timeout(&mut b,40)?;if n==0{continue;}
-            if telemetry::parse_reply(&b[..n],addr)?.is_some(){return Ok(b[..n].to_vec());}
+            if telemetry::parse_response(&b[..n],addr)?.is_some(){return Ok(b[..n].to_vec());}
         }
         anyhow::bail!("READ 0x{addr:02X}: no validated response")
     }
@@ -96,15 +121,38 @@ fn native(request:Request)->Result<Reply> {
     }
     match request {
         Request::Hid{state,period_ms,fade_ms,power,..}=>{
+            ensure!(state.is_none()||!power,"LED output and voltage reads require separate requests");
             if let Some(state)=state {
+                // Wake/check the existing HID path with a READ, never with a
+                // repeated LED effect. A valid READ rejection also establishes
+                // a round trip; it need not advertise any particular capability.
+                match read_register(&handle,&input,0x11) {
+                    Ok(_)=>reply.hid_responsive=Some(true),
+                    Err(e)=>{
+                        reply.hid_responsive=Some(false);
+                        reply.error=Some(format!("灯光尚未发送，HID 通信检查失败：{e:#}"));
+                        return Ok(());
+                    }
+                }
                 drain(&input)?;let out=protocol::report(state,period_ms,fade_ms)?;
-                if let Err(e)=control(&handle,&out){reply.api_success=Some(false);reply.error=Some(e.to_string());return Ok(reply);}
+                reply.led_delivery=Some(LedDelivery::Unconfirmed);
+                if let Err(e)=control(&handle,&out){
+                    // A system error after entering the write does not prove
+                    // the device never received it. Repeating may reset phase.
+                    reply.api_success=Some(false);
+                    reply.error=Some(format!("灯光写入返回失败，设备是否已接收未知：{e}"));return Ok(());
+                }
                 reply.api_success=Some(true);
                 let start=Instant::now();let mut b=[0;65];
-                while start.elapsed()<Duration::from_millis(300){
+                // Wait longer for this attempt's ACK without reissuing 0x04.
+                while start.elapsed()<Duration::from_millis(1000){
                     match input.read_timeout(&mut b,40) {
-                        Ok(n) if n>0=>if let Some(a)=protocol::led_ack(&b[..n],out[5]){reply.acknowledged=Some(a);break;},
-                        Ok(_)=>{},Err(_)=>break,
+                        Ok(n) if n>0=>if let Some(a)=protocol::led_ack(&b[..n],out[5]){
+                            reply.acknowledged=Some(a);
+                            reply.led_delivery=Some(if a{LedDelivery::Confirmed}else{LedDelivery::Failed});
+                            break;
+                        },
+                        Ok(_)=>{},Err(e)=>{reply.error=Some(format!("灯光已写入，但读取回执失败：{e}"));break;},
                     }
                 }
                 if reply.acknowledged==Some(false){reply.error=Some("LED 命令返回错误".into());}
@@ -150,5 +198,5 @@ fn native(request:Request)->Result<Reply> {
         }
         Request::Battery{..}=>unreachable!(),
     }
-    Ok(reply)
+    Ok(())
 }

@@ -1,11 +1,12 @@
 use crate::{config::Config,platform,worker::Reply};
-use light_core::{battery::BatteryReading,model::{Aggregate,Engine,LightState,Snapshot},power::{PowerSample,MAX_GAP_MS},sound::{SoundEngine,SoundView,top_key}};
+use light_core::{battery::BatteryReading,led_output::LedDelivery,model::{Aggregate,Engine,LightState,Snapshot},power::{PowerSample,MAX_GAP_MS},sound::{SoundEngine,SoundView,top_key}};
 use serde::Serialize;
 use std::{collections::VecDeque,path::PathBuf,sync::{atomic::{AtomicBool,Ordering},Mutex,MutexGuard},time::Instant};
 
 #[derive(Debug,Clone,Serialize)]pub struct LogEntry{pub at_ms:u64,pub kind:String,pub message:String}
 #[derive(Debug,Clone,Serialize,Default)]pub struct HardwareView {
     pub present:Option<bool>,pub device_name:Option<String>,pub api_success:Option<bool>,
+    pub link_connected:Option<bool>,pub link_error:Option<String>,pub hid_responsive:Option<bool>,pub led_delivery:Option<LedDelivery>,
     pub acknowledged:Option<bool>,pub last_checked_ms:Option<u64>,pub last_output_ms:Option<u64>,pub error:Option<String>,
 }
 #[derive(Debug,Clone,Serialize,Default)]pub struct BatteryView {
@@ -81,8 +82,16 @@ impl Shared {
         let now=self.now();let mut d=self.lock();
         if let Some(p)=r.present{d.hardware.present=Some(p);}
         if r.device_name.is_some(){d.hardware.device_name=r.device_name.clone();}
+        if r.link_connected.is_some(){d.hardware.link_connected=r.link_connected;}
+        d.hardware.link_error=r.link_error.clone();d.hardware.hid_responsive=r.hid_responsive;
         d.hardware.last_checked_ms=Some(now);
-        if sent{d.hardware.api_success=r.api_success;d.hardware.acknowledged=r.acknowledged;if r.api_success==Some(true){d.hardware.last_output_ms=Some(now);}}
+        if sent{
+            d.hardware.api_success=r.api_success;d.hardware.acknowledged=r.acknowledged;
+            let delivery=r.led_delivery.unwrap_or(LedDelivery::Unconfirmed);
+            d.hardware.led_delivery=Some(delivery);
+            if r.api_success==Some(true){d.hardware.last_output_ms=Some(now);}
+            if delivery==LedDelivery::Unconfirmed{d.log(now,"output","本次灯光命令未确认；为保留呼吸相位，不自动重复发送".into());}
+        }
         if d.hardware.error!=r.error {if let Some(error)=&r.error{d.log(now,"hardware",error.clone());}}
         d.hardware.error=r.error.clone();
     }
@@ -96,7 +105,7 @@ impl Shared {
     }
 }
 impl Data {
-    pub fn connected(&self)->bool{self.hardware.present==Some(true)&&self.hardware.error.is_none()}
+    pub fn connected(&self)->bool{self.hardware.present==Some(true)&&self.hardware.link_connected!=Some(false)&&self.hardware.error.is_none()}
     pub fn output(&mut self,aggregate:&Aggregate,now:u64)->LightState {
         if self.preview.as_ref().is_some_and(|p|now>=p.until_ms){self.preview=None;}
         if self.paused{LightState::Off}else{self.preview.as_ref().map(|p|p.state).unwrap_or(aggregate.state)}

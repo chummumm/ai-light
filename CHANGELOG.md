@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.8 — Preserve breathing phase (unreleased)
+
+- Remove the 0.3.7 periodic LED reassertion and missing-ACK retry policy. Repeating a breathing command restarts the device's effect; confirmed and unconfirmed attempts now remain quiet while the effective target is unchanged.
+- Retry only failures before LED submission or a validated device rejection, with bounded backoff. A system error after entering the write, missing ACK, or interrupted worker reply remains unconfirmed because the LED may already be running. Check the existing HID path with a read-only register transaction before submitting a changed LED effect, and wait for its ACK without sending another LED command.
+- Observe Windows Bluetooth connection state separately from HID enumeration. Reapply the latest target once after an observed disconnection/reconnection or a real Windows resume notification, rather than inferring recovery from battery reads or clock corrections.
+- Separate LED receipts from voltage queries. Battery recovery, unrelated settings saves and static-state breathing-parameter edits do not restart LED effects; explicit pause/resume and reconnect controls still request fresh output.
+- Replace color-only recovery fixtures with phase-aware regressions for acknowledged and unacknowledged breathing, explicit failures, reconnection, and unchanged completion deadlines/sound episodes.
+- The currently validated protocol has no live LED state/phase readback. A silently lost LED command and a lost ACK remain indistinguishable when the link otherwise works; this update does not claim automatic recovery of every such case.
+
 ## 0.3.7 — LED output recovery
 
 - Retry LED commands when Windows accepts a write but no valid device acknowledgement arrives. Unconfirmed or failed attempts back off for 5, 10, 20 and at most 30 seconds; a changed target is sent immediately.

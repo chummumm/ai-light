@@ -1,9 +1,9 @@
-//! LED delivery reconciliation, independent of task timers and sound episodes.
+//! Apply LED changes without restarting an effect that may already be running.
 use crate::model::LightState;
+use serde::{Deserialize, Serialize};
 
 const INITIAL_RETRY_MS: u64 = 5_000;
 const MAX_RETRY_MS: u64 = 30_000;
-const REFRESH_MS: u64 = 30_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LedCommand {
@@ -13,71 +13,96 @@ pub struct LedCommand {
     pub serial: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+impl LedCommand {
+    fn same_effect(&self, other: &Self) -> bool {
+        self.state == other.state
+            && self.serial == other.serial
+            && (!matches!(self.state, LightState::Working | LightState::Error)
+                || (self.period_ms == other.period_ms && self.fade_ms == other.fade_ms))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LedDelivery {
     Confirmed,
+    /// The effect may be running. Missing ACKs or a lost worker reply do not
+    /// justify repeating a command that restarts the breathing phase.
     Unconfirmed,
+    /// The worker did not begin submitting the LED command, or the device
+    /// explicitly rejected it. Only this outcome retries.
     Failed,
 }
 
 /// A successful system write does not prove that the lamp applied the command.
-/// Retry uncertain writes with bounded backoff, and periodically reassert even
-/// confirmed output because HID enumeration cannot reveal a silent device reset.
-/// Callers must recompute the desired command before each attempt; no task event
-/// or sound notification is replayed here. All times use a monotonic clock.
+/// Repeating an applied breathing command is observable, so confirmed and
+/// uncertain attempts stay quiet until the desired effect or connection changes.
+/// Retry only explicit failures, always recomputing the current target rather
+/// than replaying an old task event. All times use a monotonic clock.
 #[derive(Debug, Default)]
 pub struct LedOutputSync {
     last_attempt: Option<LedCommand>,
-    last_delivery: Option<LedDelivery>,
-    next_attempt_ms: u64,
+    retry_at_ms: Option<u64>,
     retry_delay_ms: u64,
+    disconnected: bool,
 }
 
 impl LedOutputSync {
     pub fn should_send(&self, desired: &LedCommand, now: u64) -> bool {
-        // A new state or device must never inherit the old command's cooldown.
-        self.last_attempt.as_ref() != Some(desired) || now >= self.next_attempt_ms
+        !self.disconnected
+            && (self
+                .last_attempt
+                .as_ref()
+                .is_none_or(|last| !last.same_effect(desired))
+                || self.retry_at_ms.is_some_and(|deadline| now >= deadline))
     }
 
     pub fn record_attempt(&mut self, desired: LedCommand, started_ms: u64, delivery: LedDelivery) {
-        if self.last_attempt.as_ref() != Some(&desired) {
+        if self
+            .last_attempt
+            .as_ref()
+            .is_none_or(|last| !last.same_effect(&desired))
+        {
             self.retry_delay_ms = 0;
         }
-        let delay = match delivery {
-            LedDelivery::Confirmed => {
+        self.retry_at_ms = match delivery {
+            LedDelivery::Confirmed | LedDelivery::Unconfirmed => {
                 self.retry_delay_ms = 0;
-                REFRESH_MS
+                None
             }
-            LedDelivery::Unconfirmed | LedDelivery::Failed => {
+            LedDelivery::Failed => {
                 self.retry_delay_ms = if self.retry_delay_ms == 0 {
                     INITIAL_RETRY_MS
                 } else {
                     (self.retry_delay_ms * 2).min(MAX_RETRY_MS)
                 };
-                self.retry_delay_ms
+                Some(started_ms.saturating_add(self.retry_delay_ms))
             }
         };
         self.last_attempt = Some(desired);
-        self.last_delivery = Some(delivery);
-        // Anchor refreshes to the write attempt, not the time spent waiting for
-        // its ACK, to avoid adding the ACK timeout to every breathing cycle.
-        self.next_attempt_ms = started_ms.saturating_add(delay);
     }
 
-    /// A failed probe invalidates confirmed output without postponing retries
-    /// that are already pending. Successful probes never confirm LED delivery.
-    pub fn transport_failed(&mut self, now: u64) {
-        if self.last_delivery == Some(LedDelivery::Confirmed) {
-            self.last_delivery = Some(LedDelivery::Failed);
-            self.retry_delay_ms = INITIAL_RETRY_MS;
-            self.next_attempt_ms = self
-                .next_attempt_ms
-                .min(now.saturating_add(INITIAL_RETRY_MS));
+    /// Observe an actual OS connection state, not a battery/READ timeout.
+    /// Unknown observations preserve the last evidence. Only a disconnected
+    /// -> connected edge requests one fresh application of the latest target.
+    pub fn observe_connection(&mut self, connected: Option<bool>) -> bool {
+        match connected {
+            Some(false) => self.disconnected = true,
+            Some(true) if self.disconnected => {
+                self.disconnected = false;
+                self.invalidate();
+                return true;
+            }
+            _ => {}
         }
+        false
     }
 
-    /// Explicit refresh, device changes and resume must resend even the same Off.
+    /// Explicit refresh or actual resume requests even an unchanged Off once.
+    /// Do not discard evidence that the selected device is still disconnected.
     pub fn invalidate(&mut self) {
-        *self = Self::default();
+        self.last_attempt = None;
+        self.retry_at_ms = None;
+        self.retry_delay_ms = 0;
     }
 }
