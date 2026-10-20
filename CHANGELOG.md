@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.8 — Preserve breathing phase (unreleased)
+## 0.3.8 — Preserve breathing phase
 
 - Remove the 0.3.7 periodic LED reassertion and missing-ACK retry policy. Repeating a breathing command restarts the device's effect; confirmed and unconfirmed attempts now remain quiet while the effective target is unchanged.
 - Retry only failures before LED submission or a validated device rejection, with bounded backoff. A system error after entering the write, missing ACK, or interrupted worker reply remains unconfirmed because the LED may already be running. Check the existing HID path with a read-only register transaction before submitting a changed LED effect, and wait for its ACK without sending another LED command.
