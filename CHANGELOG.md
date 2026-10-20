@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.7 — LED output recovery (unreleased)
+## 0.3.7 — LED output recovery
 
 - Retry LED commands when Windows accepts a write but no valid device acknowledgement arrives. Unconfirmed or failed attempts back off for 5, 10, 20 and at most 30 seconds; a changed target is sent immediately.
 - Reassert the current LED command every 30 seconds after acknowledgement so a silent device reset or stale physical state cannot remain hidden behind the output cache. Only the existing volatile LED command is resent; task countdowns and sound episodes are not restarted.
